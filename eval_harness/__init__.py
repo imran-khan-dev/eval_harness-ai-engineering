@@ -1,0 +1,59 @@
+"""Eval Harness - A reusable AI evaluation framework."""
+
+from eval_harness.core.config import EvaluationConfig
+from eval_harness.core.exceptions import (
+    ConfigurationError,
+    DatasetError,
+    EvaluationError,
+    MetricError,
+    ReportingError,
+    TraceError,
+    ValidationError,
+)
+from eval_harness.datasets.models import (
+    AnswerabilityMetadata,
+    EvaluationCase,
+    EvaluationDataset,
+    ExpectedToolCall,
+    ExpectedTrajectory,
+)
+from eval_harness.metrics.models import (
+    AggregatedMetrics,
+    EvaluationResult,
+    ExperimentResult,
+    MetricScore,
+)
+from eval_harness.tracing.models import (
+    CostEstimate,
+    ExecutionTrace,
+    LatencyMetrics,
+    TokenUsage,
+    TraceEvent,
+)
+
+__version__ = "0.1.0"
+
+__all__ = [
+    "EvaluationConfig",
+    "EvaluationError",
+    "ConfigurationError",
+    "ValidationError",
+    "TraceError",
+    "DatasetError",
+    "MetricError",
+    "ReportingError",
+    "EvaluationCase",
+    "EvaluationDataset",
+    "ExpectedToolCall",
+    "ExpectedTrajectory",
+    "AnswerabilityMetadata",
+    "TraceEvent",
+    "ExecutionTrace",
+    "TokenUsage",
+    "LatencyMetrics",
+    "CostEstimate",
+    "EvaluationResult",
+    "ExperimentResult",
+    "MetricScore",
+    "AggregatedMetrics",
+]
