@@ -1,4 +1,4 @@
-"""Tracing models for execution traces and events."""
+"""Tracing models, recorder, and trajectory reconstruction for execution traces."""
 
 from eval_harness.tracing.models import (
     CostEstimate,
@@ -7,6 +7,19 @@ from eval_harness.tracing.models import (
     TokenUsage,
     TraceEvent,
 )
+from eval_harness.tracing.recorder import (
+    ExecutionAlreadyStartedError,
+    ExecutionCompletedError,
+    ExecutionNotFoundError,
+    InMemoryTraceRecorder,
+)
+from eval_harness.tracing.trajectory import (
+    TrajectoryNode,
+    TrajectoryReconstructor,
+    TrajectoryValidationResult,
+    reconstruct_trajectory,
+    validate_trajectory,
+)
 
 __all__ = [
     "TraceEvent",
@@ -14,4 +27,13 @@ __all__ = [
     "TokenUsage",
     "LatencyMetrics",
     "CostEstimate",
+    "InMemoryTraceRecorder",
+    "ExecutionNotFoundError",
+    "ExecutionAlreadyStartedError",
+    "ExecutionCompletedError",
+    "TrajectoryNode",
+    "TrajectoryReconstructor",
+    "TrajectoryValidationResult",
+    "reconstruct_trajectory",
+    "validate_trajectory",
 ]

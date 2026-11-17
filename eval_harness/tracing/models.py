@@ -18,7 +18,10 @@ class TraceEventType(str, Enum):
     TOOL_CALL = "tool_call"
     TOOL_RESPONSE = "tool_response"
     AGENT_STEP = "agent_step"
+    AGENT_ITERATION = "agent_iteration"
     AGENT_DECISION = "agent_decision"
+    EXECUTION_START = "execution_start"
+    EXECUTION_END = "execution_end"
     ERROR = "error"
     CUSTOM = "custom"
 
@@ -109,9 +112,12 @@ class TraceEvent(BaseModel):
         id: Unique event identifier.
         event_type: Type of the trace event.
         timestamp: When the event occurred.
+        execution_id: ID of the execution/trace this event belongs to.
         parent_id: Optional parent event ID for nesting.
-        correlation_id: Optional correlation ID for grouping.
-        data: Event-specific data payload.
+        correlation_id: Optional correlation ID for grouping related events.
+        duration_ms: Optional duration in milliseconds for completed events.
+        data: Event-specific data payload (input/output metadata).
+        error: Optional error information for ERROR events.
         token_usage: Optional token usage for LLM events.
         latency: Optional latency metrics.
         cost: Optional cost estimate.
@@ -124,9 +130,12 @@ class TraceEvent(BaseModel):
     timestamp: datetime = Field(
         default_factory=lambda: datetime.now(timezone.utc), description="Event timestamp"
     )
-    parent_id: UUID | None = Field(None, description="Parent event ID")
+    execution_id: UUID | None = Field(None, description="Execution/trace ID this event belongs to")
+    parent_id: UUID | None = Field(None, description="Parent event ID for nesting")
     correlation_id: UUID | None = Field(None, description="Correlation ID for grouping")
+    duration_ms: float | None = Field(None, ge=0, description="Duration in milliseconds")
     data: dict[str, Any] = Field(default_factory=dict, description="Event data payload")
+    error: str | None = Field(None, description="Error message for ERROR events")
     token_usage: TokenUsage | None = Field(None, description="Token usage for LLM events")
     latency: LatencyMetrics | None = Field(None, description="Latency metrics")
     cost: CostEstimate | None = Field(None, description="Cost estimate")
@@ -138,6 +147,183 @@ class TraceEvent(BaseModel):
         "extra": "forbid",
         "use_enum_values": True,
     }
+
+    @classmethod
+    def llm_call(
+        cls,
+        execution_id: UUID,
+        prompt: str,
+        model: str,
+        parent_id: UUID | None = None,
+        correlation_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> TraceEvent:
+        """Create an LLM call event."""
+        return cls(
+            event_type=TraceEventType.LLM_CALL,
+            execution_id=execution_id,
+            parent_id=parent_id,
+            correlation_id=correlation_id,
+            data={"prompt": prompt, "model": model},
+            **kwargs,
+        )
+
+    @classmethod
+    def llm_response(
+        cls,
+        execution_id: UUID,
+        response: str,
+        model: str,
+        token_usage: TokenUsage | None = None,
+        cost: CostEstimate | None = None,
+        latency: LatencyMetrics | None = None,
+        parent_id: UUID | None = None,
+        correlation_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> TraceEvent:
+        """Create an LLM response event."""
+        return cls(
+            event_type=TraceEventType.LLM_RESPONSE,
+            execution_id=execution_id,
+            parent_id=parent_id,
+            correlation_id=correlation_id,
+            data={"response": response, "model": model},
+            token_usage=token_usage,
+            cost=cost,
+            latency=latency,
+            **kwargs,
+        )
+
+    @classmethod
+    def tool_call(
+        cls,
+        execution_id: UUID,
+        tool_name: str,
+        arguments: dict[str, Any],
+        parent_id: UUID | None = None,
+        correlation_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> TraceEvent:
+        """Create a tool call event."""
+        return cls(
+            event_type=TraceEventType.TOOL_CALL,
+            execution_id=execution_id,
+            parent_id=parent_id,
+            correlation_id=correlation_id,
+            data={"tool": tool_name, "arguments": arguments},
+            **kwargs,
+        )
+
+    @classmethod
+    def tool_response(
+        cls,
+        execution_id: UUID,
+        tool_name: str,
+        result: Any,
+        parent_id: UUID | None = None,
+        correlation_id: UUID | None = None,
+        latency: LatencyMetrics | None = None,
+        **kwargs: Any,
+    ) -> TraceEvent:
+        """Create a tool response event."""
+        return cls(
+            event_type=TraceEventType.TOOL_RESPONSE,
+            execution_id=execution_id,
+            parent_id=parent_id,
+            correlation_id=correlation_id,
+            data={"tool": tool_name, "result": result},
+            latency=latency,
+            **kwargs,
+        )
+
+    @classmethod
+    def agent_iteration(
+        cls,
+        execution_id: UUID,
+        iteration: int,
+        action: str,
+        parent_id: UUID | None = None,
+        correlation_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> TraceEvent:
+        """Create an agent iteration event."""
+        return cls(
+            event_type=TraceEventType.AGENT_ITERATION,
+            execution_id=execution_id,
+            parent_id=parent_id,
+            correlation_id=correlation_id,
+            data={"iteration": iteration, "action": action},
+            **kwargs,
+        )
+
+    @classmethod
+    def execution_start(
+        cls,
+        execution_id: UUID,
+        case_id: UUID,
+        correlation_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> TraceEvent:
+        """Create an execution start event."""
+        return cls(
+            event_type=TraceEventType.EXECUTION_START,
+            execution_id=execution_id,
+            correlation_id=correlation_id,
+            data={"case_id": str(case_id)},
+            **kwargs,
+        )
+
+    @classmethod
+    def execution_end(
+        cls,
+        execution_id: UUID,
+        status: str,
+        parent_id: UUID | None = None,
+        correlation_id: UUID | None = None,
+        duration_ms: float | None = None,
+        **kwargs: Any,
+    ) -> TraceEvent:
+        """Create an execution end event."""
+        return cls(
+            event_type=TraceEventType.EXECUTION_END,
+            execution_id=execution_id,
+            parent_id=parent_id,
+            correlation_id=correlation_id,
+            duration_ms=duration_ms,
+            data={"status": status},
+            **kwargs,
+        )
+
+    @classmethod
+    def create_error(
+        cls,
+        execution_id: UUID,
+        error: str,
+        parent_id: UUID | None = None,
+        correlation_id: UUID | None = None,
+        **kwargs: Any,
+    ) -> TraceEvent:
+        """Create an error event."""
+        return cls(
+            event_type=TraceEventType.ERROR,
+            execution_id=execution_id,
+            parent_id=parent_id,
+            correlation_id=correlation_id,
+            error=error,
+            **kwargs,
+        )
+
+    def is_start_event(self) -> bool:
+        """Check if this is an execution start event."""
+        return self.event_type == TraceEventType.EXECUTION_START
+
+    def is_end_event(self) -> bool:
+        """Check if this is an execution end event."""
+        return self.event_type == TraceEventType.EXECUTION_END
+
+    def is_error_event(self) -> bool:
+        """Check if this is an error event."""
+        return self.event_type == TraceEventType.ERROR
 
 
 class ExecutionTrace(BaseModel):
@@ -209,6 +395,59 @@ class ExecutionTrace(BaseModel):
     def get_child_events(self, parent_id: UUID) -> list[TraceEvent]:
         """Get all child events of a parent event."""
         return [e for e in self.events if e.parent_id == parent_id]
+
+    def get_llm_events(self) -> list[TraceEvent]:
+        """Get all LLM-related events (calls and responses)."""
+        return [
+            e
+            for e in self.events
+            if e.event_type in (TraceEventType.LLM_CALL, TraceEventType.LLM_RESPONSE)
+        ]
+
+    def get_tool_events(self) -> list[TraceEvent]:
+        """Get all tool-related events (calls and responses)."""
+        return [
+            e
+            for e in self.events
+            if e.event_type in (TraceEventType.TOOL_CALL, TraceEventType.TOOL_RESPONSE)
+        ]
+
+    def get_agent_events(self) -> list[TraceEvent]:
+        """Get all agent-related events (steps, iterations, decisions)."""
+        return [
+            e
+            for e in self.events
+            if e.event_type
+            in (
+                TraceEventType.AGENT_STEP,
+                TraceEventType.AGENT_ITERATION,
+                TraceEventType.AGENT_DECISION,
+            )
+        ]
+
+    def get_error_events(self) -> list[TraceEvent]:
+        """Get all error events."""
+        return [e for e in self.events if e.event_type == TraceEventType.ERROR]
+
+    def get_execution_events(self) -> list[TraceEvent]:
+        """Get execution start/end events."""
+        return [
+            e
+            for e in self.events
+            if e.event_type in (TraceEventType.EXECUTION_START, TraceEventType.EXECUTION_END)
+        ]
+
+    def get_root_events(self) -> list[TraceEvent]:
+        """Get events with no parent (root-level events)."""
+        return [e for e in self.events if e.parent_id is None]
+
+    def get_event_tree(self) -> dict[UUID, list[TraceEvent]]:
+        """Build a parent->children mapping for all events."""
+        tree: dict[UUID, list[TraceEvent]] = {}
+        for event in self.events:
+            if event.parent_id:
+                tree.setdefault(event.parent_id, []).append(event)
+        return tree
 
     model_config = {
         "validate_assignment": True,
