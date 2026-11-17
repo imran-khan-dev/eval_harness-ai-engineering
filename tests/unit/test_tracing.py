@@ -10,6 +10,7 @@ from eval_harness.tracing.models import (
     CostEstimate,
     ExecutionTrace,
     LatencyMetrics,
+    LatencyStats,
     ModelPricing,
     ModelPricingRegistry,
     TokenUsage,
@@ -1180,3 +1181,580 @@ class TestExecutionTrace:
         run_id = uuid4()
         trace = ExecutionTrace(case_id=uuid4(), run_id=run_id)
         assert trace.run_id == run_id
+
+
+class TestLatencyStats:
+    """Tests for LatencyStats model."""
+
+    def test_empty(self) -> None:
+        stats = LatencyStats.from_durations([])
+        assert stats.count == 0
+        assert stats.min_ms is None
+        assert stats.max_ms is None
+        assert stats.avg_ms is None
+        assert stats.median_ms is None
+        assert stats.p95_ms is None
+
+    def test_single_duration(self) -> None:
+        stats = LatencyStats.from_durations([100.0])
+        assert stats.count == 1
+        assert stats.min_ms == 100.0
+        assert stats.max_ms == 100.0
+        assert stats.avg_ms == 100.0
+        assert stats.median_ms == 100.0
+        assert stats.p95_ms == 100.0
+
+    def test_multiple_durations(self) -> None:
+        stats = LatencyStats.from_durations([10.0, 20.0, 30.0, 40.0, 50.0])
+        assert stats.count == 5
+        assert stats.min_ms == 10.0
+        assert stats.max_ms == 50.0
+        assert stats.avg_ms == 30.0
+        assert stats.median_ms == 30.0
+        # p95 for 5 elements: index = 4 * 0.95 = 3.8, interpolated between 40 and 50
+        assert stats.p95_ms == 48.0
+
+    def test_even_count_median(self) -> None:
+        stats = LatencyStats.from_durations([10.0, 20.0, 30.0, 40.0])
+        assert stats.count == 4
+        assert stats.median_ms == 25.0  # (20 + 30) / 2
+
+    def test_filters_negative_and_none(self) -> None:
+        stats = LatencyStats.from_durations([100.0, -50.0, 200.0, None, 150.0])
+        assert stats.count == 3
+        assert stats.min_ms == 100.0
+        assert stats.max_ms == 200.0
+        assert stats.avg_ms == 150.0  # (100 + 200 + 150) / 3
+
+    def test_all_invalid(self) -> None:
+        stats = LatencyStats.from_durations([-1.0, -2.0, None])
+        assert stats.count == 0
+        assert stats.min_ms is None
+        assert stats.max_ms is None
+
+    def test_rejects_negative_fields(self) -> None:
+        with pytest.raises(ValidationError):
+            LatencyStats(min_ms=-1.0)
+        with pytest.raises(ValidationError):
+            LatencyStats(max_ms=-1.0)
+        with pytest.raises(ValidationError):
+            LatencyStats(avg_ms=-1.0)
+
+
+class TestTraceEventDuration:
+    """Tests for TraceEvent.get_duration_ms()."""
+
+    def test_from_latency_field(self) -> None:
+        latency = LatencyMetrics(
+            start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC) + timedelta(milliseconds=150),
+        )
+        event = TraceEvent(event_type=TraceEventType.LLM_RESPONSE, latency=latency)
+        assert event.get_duration_ms() == pytest.approx(150.0, abs=0.01)
+
+    def test_from_duration_field(self) -> None:
+        event = TraceEvent(event_type=TraceEventType.LLM_RESPONSE, duration_ms=200.0)
+        assert event.get_duration_ms() == 200.0
+
+    def test_prefers_latency_over_duration(self) -> None:
+        latency = LatencyMetrics(
+            start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC) + timedelta(milliseconds=150),
+        )
+        event = TraceEvent(
+            event_type=TraceEventType.LLM_RESPONSE,
+            latency=latency,
+            duration_ms=200.0,
+        )
+        assert event.get_duration_ms() == pytest.approx(150.0, abs=0.01)
+
+    def test_returns_none_when_missing(self) -> None:
+        event = TraceEvent(event_type=TraceEventType.LLM_RESPONSE)
+        assert event.get_duration_ms() is None
+
+    def test_returns_none_for_negative_latency(self) -> None:
+        # Negative duration is rejected by TraceEvent validator (ge=0)
+        with pytest.raises(ValidationError):
+            TraceEvent(event_type=TraceEventType.LLM_RESPONSE, duration_ms=-50.0)
+
+
+class TestExecutionTraceLatency:
+    """Tests for ExecutionTrace latency aggregation methods."""
+
+    def test_get_llm_durations(self) -> None:
+        trace = ExecutionTrace(case_id=uuid4())
+        latency1 = LatencyMetrics(
+            start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC) + timedelta(milliseconds=100),
+        )
+        latency2 = LatencyMetrics(
+            start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC) + timedelta(milliseconds=200),
+        )
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_CALL, latency=latency1))
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_RESPONSE, latency=latency2))
+        trace.add_event(TraceEvent(event_type=TraceEventType.TOOL_CALL))  # no duration
+
+        durations = trace.get_llm_durations()
+        assert durations == [pytest.approx(100.0, abs=0.01), pytest.approx(200.0, abs=0.01)]
+
+    def test_get_tool_durations(self) -> None:
+        trace = ExecutionTrace(case_id=uuid4())
+        latency1 = LatencyMetrics(
+            start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC) + timedelta(milliseconds=50),
+        )
+        latency2 = LatencyMetrics(
+            start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC) + timedelta(milliseconds=75),
+        )
+        trace.add_event(TraceEvent(event_type=TraceEventType.TOOL_CALL, latency=latency1))
+        trace.add_event(TraceEvent(event_type=TraceEventType.TOOL_RESPONSE, latency=latency2))
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_CALL))  # no duration
+
+        durations = trace.get_tool_durations()
+        assert durations == [pytest.approx(50.0, abs=0.01), pytest.approx(75.0, abs=0.01)]
+
+    def test_get_llm_durations_filters_negative(self) -> None:
+        trace = ExecutionTrace(case_id=uuid4())
+        # Negative durations are rejected by LatencyMetrics (ge=0)
+        # But we can add events with no duration
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_CALL))  # no duration
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_RESPONSE, duration_ms=100.0))
+
+        durations = trace.get_llm_durations()
+        assert durations == [100.0]
+
+    def test_get_tool_durations_separate_from_llm(self) -> None:
+        trace = ExecutionTrace(case_id=uuid4())
+        llm_latency = LatencyMetrics(
+            start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC) + timedelta(milliseconds=100),
+        )
+        tool_latency = LatencyMetrics(
+            start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC) + timedelta(milliseconds=200),
+        )
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_CALL, latency=llm_latency))
+        trace.add_event(TraceEvent(event_type=TraceEventType.TOOL_CALL, latency=tool_latency))
+
+        llm_durations = trace.get_llm_durations()
+        tool_durations = trace.get_tool_durations()
+
+        assert llm_durations == [pytest.approx(100.0, abs=0.01)]
+        assert tool_durations == [pytest.approx(200.0, abs=0.01)]
+        assert llm_durations != tool_durations
+
+    def test_get_llm_latency_stats(self) -> None:
+        trace = ExecutionTrace(case_id=uuid4())
+        for ms in [10.0, 20.0, 30.0, 40.0, 50.0]:
+            latency = LatencyMetrics(
+                start_time=datetime.now(UTC),
+                end_time=datetime.now(UTC) + timedelta(milliseconds=ms),
+            )
+            trace.add_event(TraceEvent(event_type=TraceEventType.LLM_CALL, latency=latency))
+
+        stats = trace.get_llm_latency_stats()
+        assert stats.count == 5
+        assert stats.min_ms == pytest.approx(10.0, abs=0.01)
+        assert stats.max_ms == pytest.approx(50.0, abs=0.02)
+        assert stats.avg_ms == pytest.approx(30.0, abs=0.01)
+        assert stats.median_ms == pytest.approx(30.0, abs=0.01)
+
+    def test_get_tool_latency_stats(self) -> None:
+        trace = ExecutionTrace(case_id=uuid4())
+        for ms in [5.0, 15.0, 25.0]:
+            latency = LatencyMetrics(
+                start_time=datetime.now(UTC),
+                end_time=datetime.now(UTC) + timedelta(milliseconds=ms),
+            )
+            trace.add_event(TraceEvent(event_type=TraceEventType.TOOL_CALL, latency=latency))
+
+        stats = trace.get_tool_latency_stats()
+        assert stats.count == 3
+        assert stats.min_ms == pytest.approx(5.0, abs=0.01)
+        assert stats.max_ms == pytest.approx(25.0, abs=0.01)
+        assert stats.avg_ms == pytest.approx(15.0, abs=0.01)
+        assert stats.median_ms == pytest.approx(15.0, abs=0.01)
+
+    def test_get_execution_wall_clock_duration_ms(self) -> None:
+        start = datetime.now(UTC)
+        trace = ExecutionTrace(case_id=uuid4(), start_time=start)
+        # Not finalized - should return duration from start to now
+        duration = trace.get_execution_wall_clock_duration_ms()
+        assert duration is not None
+        assert duration >= 0
+
+    def test_get_execution_wall_clock_duration_ms_finalized(self) -> None:
+        start = datetime.now(UTC)
+        end = start + timedelta(milliseconds=500)
+        trace = ExecutionTrace(case_id=uuid4(), start_time=start, end_time=end)
+        duration = trace.get_execution_wall_clock_duration_ms()
+        assert duration == pytest.approx(500.0, abs=0.01)
+
+    def test_get_execution_wall_clock_duration_ms_no_start(self) -> None:
+        trace = ExecutionTrace(case_id=uuid4())
+        # Directly test with None start_time by bypassing validation
+        # (using object.__setattr__ to avoid pydantic validation)
+        object.__setattr__(trace, "start_time", None)
+        duration = trace.get_execution_wall_clock_duration_ms()
+        assert duration is None
+
+    def test_wall_clock_separate_from_summed_operations(self) -> None:
+        """Test that wall-clock duration is not confused with summed operation durations."""
+        start = datetime.now(UTC)
+        end = start + timedelta(milliseconds=1000)  # 1 second wall clock
+        trace = ExecutionTrace(case_id=uuid4(), start_time=start, end_time=end)
+
+        # Add LLM events totaling 200ms
+        for ms in [50.0, 50.0, 50.0, 50.0]:
+            latency = LatencyMetrics(
+                start_time=datetime.now(UTC),
+                end_time=datetime.now(UTC) + timedelta(milliseconds=ms),
+            )
+            trace.add_event(TraceEvent(event_type=TraceEventType.LLM_CALL, latency=latency))
+
+        # Add tool events totaling 150ms
+        for ms in [75.0, 75.0]:
+            latency = LatencyMetrics(
+                start_time=datetime.now(UTC),
+                end_time=datetime.now(UTC) + timedelta(milliseconds=ms),
+            )
+            trace.add_event(TraceEvent(event_type=TraceEventType.TOOL_CALL, latency=latency))
+
+        wall_clock = trace.get_execution_wall_clock_duration_ms()
+        llm_stats = trace.get_llm_latency_stats()
+        tool_stats = trace.get_tool_latency_stats()
+
+        # Wall clock (1000ms) != sum of operations (350ms)
+        assert wall_clock == pytest.approx(1000.0, abs=0.01)
+        assert llm_stats.count == 4
+        assert tool_stats.count == 2
+        # Sum of all operation durations = 4 * 50 + 2 * 75 = 350ms
+        # Wall clock is independent measurement
+        summed = llm_stats.avg_ms * llm_stats.count + tool_stats.avg_ms * tool_stats.count
+        assert wall_clock != summed
+
+    def test_get_latency_summary(self) -> None:
+        trace = ExecutionTrace(case_id=uuid4())
+        latency = LatencyMetrics(
+            start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC) + timedelta(milliseconds=100),
+        )
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_CALL, latency=latency))
+
+        summary = trace.get_latency_summary()
+        assert "llm_stats" in summary
+        assert "tool_stats" in summary
+        assert "execution_wall_clock_ms" in summary
+        assert isinstance(summary["llm_stats"], LatencyStats)
+        assert isinstance(summary["tool_stats"], LatencyStats)
+        assert summary["llm_stats"].count == 1
+        assert summary["tool_stats"].count == 0
+
+    def test_latency_stats_with_no_llm_events(self) -> None:
+        trace = ExecutionTrace(case_id=uuid4())
+        trace.add_event(TraceEvent(event_type=TraceEventType.TOOL_CALL))
+
+        stats = trace.get_llm_latency_stats()
+        assert stats.count == 0
+        assert stats.min_ms is None
+        assert stats.max_ms is None
+
+    def test_latency_stats_with_no_tool_events(self) -> None:
+        trace = ExecutionTrace(case_id=uuid4())
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_CALL))
+
+        stats = trace.get_tool_latency_stats()
+        assert stats.count == 0
+        assert stats.min_ms is None
+        assert stats.max_ms is None
+
+
+class TestFullIntegration:
+    """Comprehensive integration tests for token, cost, and latency together."""
+
+    def test_token_cost_latency_together(self) -> None:
+        """Test that token usage, cost estimation, and latency work together."""
+        from eval_harness.tracing.models import ModelPricing, ModelPricingRegistry
+        from eval_harness.tracing.recorder import InMemoryTraceRecorder
+
+        recorder = InMemoryTraceRecorder()
+        exec_id = uuid4()
+        case_id = uuid4()
+
+        # Setup pricing
+        registry = ModelPricingRegistry()
+        pricing = ModelPricing(
+            model_name="gpt-4o",
+            input_price_per_million=5.0,
+            output_price_per_million=15.0,
+            cached_input_price_per_million=1.0,
+            version="2024-11",
+        )
+        registry.register(pricing)
+
+        recorder.start_execution(exec_id, case_id)
+
+        # LLM call with latency
+        call_latency = LatencyMetrics(
+            start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC) + timedelta(milliseconds=50),
+        )
+        recorder.record_event(
+            TraceEvent.llm_call(exec_id, "What is 2+2?", "gpt-4o", latency=call_latency)
+        )
+
+        # LLM response with tokens, cost, and latency
+        resp_latency = LatencyMetrics(
+            start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC) + timedelta(milliseconds=200),
+        )
+        token_usage = TokenUsage(prompt_tokens=1000, completion_tokens=500, cached_tokens=200)
+        cost = registry.estimate_cost("gpt-4o", token_usage)
+        recorder.record_event(
+            TraceEvent.llm_response(
+                exec_id,
+                "4",
+                "gpt-4o",
+                token_usage=token_usage,
+                cost=cost,
+                latency=resp_latency,
+            )
+        )
+
+        # Tool call with latency
+        tool_latency = LatencyMetrics(
+            start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC) + timedelta(milliseconds=100),
+        )
+        recorder.record_event(
+            TraceEvent.tool_call(exec_id, "calculator", {"expr": "2+2"}, latency=tool_latency)
+        )
+
+        recorder.end_execution(exec_id, status="success")
+
+        trace = recorder.get_execution(exec_id)
+
+        # Verify token aggregation
+        assert trace.total_tokens.prompt_tokens == 1000
+        assert trace.total_tokens.completion_tokens == 500
+        assert trace.total_tokens.cached_tokens == 200
+        assert trace.total_tokens.total_tokens == 1700  # prompt + completion + cached
+
+        # Verify cost aggregation
+        assert trace.total_cost.total_cost_usd == pytest.approx(0.0117, abs=0.0001)
+        assert trace.total_cost.model_name == "gpt-4o"
+        assert trace.total_cost.model_names == ["gpt-4o"]
+        assert trace.total_cost.pricing_version == "2024-11"
+        assert trace.total_cost.pricing_versions == ["2024-11"]
+
+        # Verify latency aggregation
+        assert trace.get_execution_wall_clock_duration_ms() is not None
+        llm_stats = trace.get_llm_latency_stats()
+        assert llm_stats.count == 2  # call + response
+        tool_stats = trace.get_tool_latency_stats()
+        assert tool_stats.count == 1
+
+        # Verify response-only latency (avoids double-counting)
+        resp_stats = trace.get_llm_response_latency_stats()
+        assert resp_stats.count == 1
+        assert resp_stats.avg_ms == pytest.approx(200.0, abs=0.01)
+
+    def test_multiple_models_cost_attribution(self) -> None:
+        """Test that multiple models retain correct cost attribution."""
+        trace = ExecutionTrace(case_id=uuid4())
+
+        registry = ModelPricingRegistry()
+        gpt4o = ModelPricing(
+            model_name="gpt-4o",
+            input_price_per_million=5.0,
+            output_price_per_million=15.0,
+            version="2024-11",
+        )
+        claude = ModelPricing(
+            model_name="claude-3-5-sonnet",
+            input_price_per_million=3.0,
+            output_price_per_million=15.0,
+            version="2024-11",
+        )
+        registry.register(gpt4o)
+        registry.register(claude)
+
+        # gpt-4o call
+        usage1 = TokenUsage(prompt_tokens=1000, completion_tokens=500)
+        cost1 = registry.estimate_cost("gpt-4o", usage1)
+        trace.add_event(
+            TraceEvent(
+                event_type=TraceEventType.LLM_RESPONSE,
+                token_usage=usage1,
+                cost=cost1,
+                data={"model": "gpt-4o"},
+            )
+        )
+
+        # claude call
+        usage2 = TokenUsage(prompt_tokens=500, completion_tokens=200)
+        cost2 = registry.estimate_cost("claude-3-5-sonnet", usage2)
+        trace.add_event(
+            TraceEvent(
+                event_type=TraceEventType.LLM_RESPONSE,
+                token_usage=usage2,
+                cost=cost2,
+                data={"model": "claude-3-5-sonnet"},
+            )
+        )
+
+        # Verify total cost
+        expected = (1000/1e6)*5 + (500/1e6)*15 + (500/1e6)*3 + (200/1e6)*15
+        assert trace.total_cost.total_cost_usd == pytest.approx(expected)
+
+        # Verify model attribution
+        assert trace.total_cost.model_name == "gpt-4o"  # Primary (first)
+        assert trace.total_cost.model_names == ["gpt-4o", "claude-3-5-sonnet"]
+        assert trace.total_cost.pricing_version == "2024-11"
+        assert trace.total_cost.pricing_versions == ["2024-11"]  # Deduplicated
+
+    def test_unknown_model_pricing_distinguishable_from_zero(self) -> None:
+        """Test that unknown model pricing returns None, not zero cost."""
+        registry = ModelPricingRegistry()
+        gpt4o = ModelPricing(
+            model_name="gpt-4o",
+            input_price_per_million=5.0,
+            output_price_per_million=15.0,
+        )
+        registry.register(gpt4o)
+
+        trace = ExecutionTrace(case_id=uuid4())
+
+        # Known model
+        usage1 = TokenUsage(prompt_tokens=1000, completion_tokens=500)
+        cost1 = registry.estimate_cost("gpt-4o", usage1)
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_RESPONSE, cost=cost1))
+
+        # Unknown model - returns None
+        usage2 = TokenUsage(prompt_tokens=1000, completion_tokens=500)
+        cost2 = registry.estimate_cost("unknown-model", usage2)
+        assert cost2 is None
+
+        # Add event with no cost (simulating unknown model)
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_RESPONSE, cost=None))
+
+        # Total should only include known model cost
+        assert trace.total_cost.total_cost_usd == cost1.total_cost_usd
+        assert trace.total_cost.total_cost_usd > 0
+
+    def test_missing_data_handled_consistently(self) -> None:
+        """Test that missing token usage, pricing, or duration data is handled consistently."""
+        trace = ExecutionTrace(case_id=uuid4())
+
+        # Event with no token usage
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_CALL))
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_RESPONSE))
+
+        # Event with token usage but no cost
+        trace.add_event(
+            TraceEvent(
+                event_type=TraceEventType.LLM_RESPONSE,
+                token_usage=TokenUsage(prompt_tokens=100, completion_tokens=50),
+            )
+        )
+
+        # Event with latency on call but not response
+        latency = LatencyMetrics(
+            start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC) + timedelta(milliseconds=100),
+        )
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_CALL, latency=latency))
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_RESPONSE))
+
+        # Verify aggregates
+        assert trace.total_tokens.prompt_tokens == 100
+        assert trace.total_tokens.completion_tokens == 50
+        assert trace.total_cost.total_cost_usd == 0.0
+
+        # Latency stats should handle missing durations
+        llm_durations = trace.get_llm_durations()
+        assert len(llm_durations) == 1  # Only the call has duration
+        llm_stats = trace.get_llm_latency_stats()
+        assert llm_stats.count == 1
+        assert llm_stats.avg_ms == pytest.approx(100.0, abs=0.01)
+
+    def test_execution_completion_and_reconstruction(self) -> None:
+        """Test that execution completion and trajectory reconstruction preserve aggregates."""
+        from eval_harness.tracing.recorder import InMemoryTraceRecorder
+        from eval_harness.tracing.trajectory import reconstruct_trajectory, validate_trajectory
+
+        recorder = InMemoryTraceRecorder()
+        exec_id = uuid4()
+        case_id = uuid4()
+
+        recorder.start_execution(exec_id, case_id)
+
+        # Add events
+        token_usage = TokenUsage(prompt_tokens=200, completion_tokens=100)
+        cost = CostEstimate(input_cost_usd=0.01, output_cost_usd=0.02)
+        latency = LatencyMetrics(
+            start_time=datetime.now(UTC),
+            end_time=datetime.now(UTC) + timedelta(milliseconds=150),
+        )
+
+        recorder.record_event(
+            TraceEvent.llm_call(exec_id, "prompt", "gpt-4o", latency=latency)
+        )
+        recorder.record_event(
+            TraceEvent.llm_response(
+                exec_id, "response", "gpt-4o",
+                token_usage=token_usage, cost=cost, latency=latency
+            )
+        )
+
+        recorder.end_execution(exec_id, status="success")
+
+        # Get trace and verify aggregates preserved
+        trace = recorder.get_execution(exec_id)
+        assert trace.total_tokens.prompt_tokens == 200
+        assert trace.total_tokens.completion_tokens == 100
+        assert trace.total_cost.input_cost_usd == 0.01
+        assert trace.total_cost.output_cost_usd == 0.02
+        llm_stats = trace.get_llm_latency_stats()
+        assert llm_stats.count == 2
+
+        # Reconstruct trajectory
+        trajectory = reconstruct_trajectory(trace)
+        assert len(trajectory) == 2  # Two root events
+
+        # Validate trajectory
+        validation = validate_trajectory(trace)
+        assert validation.is_valid
+
+    def test_empty_and_partial_traces(self) -> None:
+        """Test empty and partially populated traces."""
+        # Empty trace
+        trace = ExecutionTrace(case_id=uuid4())
+        assert trace.total_tokens.prompt_tokens == 0
+        assert trace.total_tokens.completion_tokens == 0
+        assert trace.total_cost.total_cost_usd == 0.0
+        assert trace.get_llm_latency_stats().count == 0
+        assert trace.get_tool_latency_stats().count == 0
+        assert trace.get_execution_wall_clock_duration_ms() is not None
+
+        # Trace with only tool events
+        trace2 = ExecutionTrace(case_id=uuid4())
+        trace2.add_event(TraceEvent(event_type=TraceEventType.TOOL_CALL))
+        trace2.add_event(TraceEvent(event_type=TraceEventType.TOOL_RESPONSE))
+        assert trace2.total_tokens.prompt_tokens == 0
+        assert trace2.total_cost.total_cost_usd == 0.0
+        assert trace2.get_llm_latency_stats().count == 0
+        assert trace2.get_tool_latency_stats().count == 0
+
+        # Trace with only LLM call (no response)
+        trace3 = ExecutionTrace(case_id=uuid4())
+        trace3.add_event(TraceEvent(event_type=TraceEventType.LLM_CALL))
+        assert trace3.get_llm_latency_stats().count == 0  # No duration
+
+        # Trace with LLM response but no token usage
+        trace4 = ExecutionTrace(case_id=uuid4())
+        trace4.add_event(TraceEvent(event_type=TraceEventType.LLM_RESPONSE))
+        assert trace4.total_tokens.prompt_tokens == 0
+        assert trace4.total_cost.total_cost_usd == 0.0

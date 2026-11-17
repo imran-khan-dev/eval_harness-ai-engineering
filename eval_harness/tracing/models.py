@@ -88,14 +88,81 @@ class LatencyMetrics(BaseModel):
     }
 
 
+class LatencyStats(BaseModel):
+    """Aggregated latency statistics for a set of operations."""
+
+    count: int = Field(default=0, ge=0, description="Number of measured operations")
+    min_ms: float | None = Field(default=None, ge=0, description="Minimum latency (ms)")
+    max_ms: float | None = Field(default=None, ge=0, description="Maximum latency (ms)")
+    avg_ms: float | None = Field(default=None, ge=0, description="Average latency (ms)")
+    median_ms: float | None = Field(default=None, ge=0, description="Median latency (ms)")
+    p95_ms: float | None = Field(default=None, ge=0, description="95th percentile latency (ms)")
+
+    @classmethod
+    def from_durations(cls, durations: list[float]) -> LatencyStats:
+        """Create LatencyStats from a list of durations in milliseconds.
+
+        Args:
+            durations: List of duration values in milliseconds.
+
+        Returns:
+            LatencyStats with computed statistics.
+        """
+        if not durations:
+            return cls()
+
+        valid_durations = [d for d in durations if d is not None and d >= 0]
+        if not valid_durations:
+            return cls()
+
+        sorted_durations = sorted(valid_durations)
+        count = len(sorted_durations)
+
+        def percentile(sorted_vals: list[float], p: float) -> float:
+            if not sorted_vals:
+                return 0.0
+            k = (len(sorted_vals) - 1) * p
+            f = int(k)
+            c = min(f + 1, len(sorted_vals) - 1)
+            if f == c:
+                return sorted_vals[f]
+            return sorted_vals[f] + (sorted_vals[c] - sorted_vals[f]) * (k - f)
+
+        return cls(
+            count=count,
+            min_ms=sorted_durations[0],
+            max_ms=sorted_durations[-1],
+            avg_ms=sum(sorted_durations) / count,
+            median_ms=percentile(sorted_durations, 0.5),
+            p95_ms=percentile(sorted_durations, 0.95),
+        )
+
+    model_config = {
+        "validate_assignment": False,
+        "extra": "forbid",
+    }
+
+
 class CostEstimate(BaseModel):
-    """Estimated cost for an LLM operation."""
+    """Estimated cost for an LLM operation.
+
+    Attributes:
+        input_cost_usd: Input token cost in USD.
+        output_cost_usd: Output token cost in USD.
+        total_cost_usd: Total cost in USD.
+        model_name: Primary model name (first model added, for back-compat).
+        model_names: List of all model names contributing to this cost estimate.
+        pricing_version: Primary pricing version (first model's, for back-compat).
+        pricing_versions: List of all pricing versions.
+    """
 
     input_cost_usd: float = Field(default=0.0, ge=0, description="Input token cost in USD")
     output_cost_usd: float = Field(default=0.0, ge=0, description="Output token cost in USD")
     total_cost_usd: float = Field(default=0.0, ge=0, description="Total cost in USD")
-    model_name: str | None = Field(None, description="Model used for cost calculation")
-    pricing_version: str | None = Field(None, description="Pricing data version")
+    model_name: str | None = Field(None, description="Primary model name (first model)")
+    model_names: list[str] = Field(default_factory=list, description="All model names")
+    pricing_version: str | None = Field(None, description="Primary pricing version")
+    pricing_versions: list[str] = Field(default_factory=list, description="All pricing versions")
 
     @model_validator(mode="after")
     def compute_total(self) -> CostEstimate:
@@ -103,11 +170,24 @@ class CostEstimate(BaseModel):
         return self
 
     def __add__(self, other: CostEstimate) -> CostEstimate:
+        # Combine model names, avoiding duplicates while preserving order
+        combined_names = list(self.model_names)
+        for name in other.model_names:
+            if name and name not in combined_names:
+                combined_names.append(name)
+
+        combined_versions = list(self.pricing_versions)
+        for ver in other.pricing_versions:
+            if ver and ver not in combined_versions:
+                combined_versions.append(ver)
+
         return CostEstimate(
             input_cost_usd=self.input_cost_usd + other.input_cost_usd,
             output_cost_usd=self.output_cost_usd + other.output_cost_usd,
             model_name=self.model_name or other.model_name,
+            model_names=combined_names,
             pricing_version=self.pricing_version or other.pricing_version,
+            pricing_versions=combined_versions,
         )
 
     model_config = {
@@ -189,7 +269,9 @@ class ModelPricing(BaseModel):
             output_cost_usd=output_cost,
             total_cost_usd=input_cost + cached_cost + output_cost,
             model_name=self.model_name,
+            model_names=[self.model_name] if self.model_name else [],
             pricing_version=self.version,
+            pricing_versions=[self.version] if self.version else [],
         )
 
     model_config = {
@@ -516,6 +598,24 @@ class TraceEvent(BaseModel):
         """Check if this is an error event."""
         return self.event_type == TraceEventType.ERROR
 
+    def get_duration_ms(self) -> float | None:
+        """Get the duration in milliseconds from this event.
+
+        Prefers latency.duration_ms if available, falls back to duration_ms field.
+        Returns None if no duration information is available.
+        """
+        if self.latency is not None and self.latency.duration_ms is not None:
+            return self.latency.duration_ms
+        return self.duration_ms
+
+    def is_llm_event(self) -> bool:
+        """Check if this is an LLM-related event (call or response)."""
+        return self.event_type in (TraceEventType.LLM_CALL, TraceEventType.LLM_RESPONSE)
+
+    def is_tool_event(self) -> bool:
+        """Check if this is a tool-related event (call or response)."""
+        return self.event_type in (TraceEventType.TOOL_CALL, TraceEventType.TOOL_RESPONSE)
+
 
 class ExecutionTrace(BaseModel):
     """A complete execution trace for an evaluation case.
@@ -644,6 +744,105 @@ class ExecutionTrace(BaseModel):
             if event.parent_id:
                 tree.setdefault(event.parent_id, []).append(event)
         return tree
+
+    def get_llm_durations(self) -> list[float]:
+        """Get durations of all LLM events (calls and responses) in milliseconds.
+
+        Returns:
+            List of duration values for LLM events that have duration information.
+            Note: This includes both LLM_CALL and LLM_RESPONSE events. If both have
+            duration set, they will both be counted. Use get_llm_response_durations()
+            to only count response events.
+        """
+        durations = []
+        for event in self.get_llm_events():
+            duration = event.get_duration_ms()
+            if duration is not None and duration >= 0:
+                durations.append(duration)
+        return durations
+
+    def get_llm_response_durations(self) -> list[float]:
+        """Get durations of only LLM response events in milliseconds.
+
+        This avoids double-counting when both LLM_CALL and LLM_RESPONSE have
+        duration set, since the response typically represents the complete operation.
+
+        Returns:
+            List of duration values for LLM_RESPONSE events that have duration information.
+        """
+        durations = []
+        for event in self.get_events_by_type(TraceEventType.LLM_RESPONSE):
+            duration = event.get_duration_ms()
+            if duration is not None and duration >= 0:
+                durations.append(duration)
+        return durations
+
+    def get_llm_response_latency_stats(self) -> LatencyStats:
+        """Get aggregated latency statistics for LLM response events only.
+
+        Returns:
+            LatencyStats computed from LLM_RESPONSE event durations.
+        """
+        return LatencyStats.from_durations(self.get_llm_response_durations())
+
+    def get_tool_durations(self) -> list[float]:
+        """Get durations of all tool events (calls and responses) in milliseconds.
+
+        Returns:
+            List of duration values for tool events that have duration information.
+        """
+        durations = []
+        for event in self.get_tool_events():
+            duration = event.get_duration_ms()
+            if duration is not None and duration >= 0:
+                durations.append(duration)
+        return durations
+
+    def get_execution_wall_clock_duration_ms(self) -> float | None:
+        """Get the wall-clock execution duration in milliseconds.
+
+        This is the total duration from execution start to end (if finalized),
+        or from start_time to now (if still in progress).
+        This is distinct from summed operation durations.
+
+        Returns:
+            Wall-clock duration in milliseconds, or None if start_time is missing.
+        """
+        if self.start_time is None:
+            return None
+        end = self.end_time or datetime.now(timezone.utc)
+        return (end - self.start_time).total_seconds() * 1000
+
+    def get_llm_latency_stats(self) -> LatencyStats:
+        """Get aggregated latency statistics for LLM events.
+
+        Returns:
+            LatencyStats computed from LLM event durations.
+        """
+        return LatencyStats.from_durations(self.get_llm_durations())
+
+    def get_tool_latency_stats(self) -> LatencyStats:
+        """Get aggregated latency statistics for tool events.
+
+        Returns:
+            LatencyStats computed from tool event durations.
+        """
+        return LatencyStats.from_durations(self.get_tool_durations())
+
+    def get_latency_summary(self) -> dict[str, LatencyStats | float | None]:
+        """Get a comprehensive latency summary for the trace.
+
+        Returns:
+            Dictionary containing:
+            - llm_stats: LatencyStats for LLM events
+            - tool_stats: LatencyStats for tool events
+            - execution_wall_clock_ms: Wall-clock execution duration
+        """
+        return {
+            "llm_stats": self.get_llm_latency_stats(),
+            "tool_stats": self.get_tool_latency_stats(),
+            "execution_wall_clock_ms": self.get_execution_wall_clock_duration_ms(),
+        }
 
     model_config = {
         "validate_assignment": True,
