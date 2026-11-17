@@ -27,6 +27,9 @@ from eval_harness.evaluators import (
     JSONValidityEvaluator,
     NormalizedExactMatchEvaluator,
     StringSimilarityEvaluator,
+    ToolArgumentEvaluator,
+    ToolExecutionEvaluator,
+    ToolSelectionEvaluator,
 )
 from eval_harness.metrics.models import (
     AggregatedMetrics,
@@ -76,4 +79,7 @@ __all__ = [
     "JSONValidityEvaluator",
     "JSONSchemaEvaluator",
     "JSONFieldMatchEvaluator",
+    "ToolSelectionEvaluator",
+    "ToolArgumentEvaluator",
+    "ToolExecutionEvaluator",
 ]

@@ -12,6 +12,11 @@ from eval_harness.evaluators.structured import (
     JSONSchemaEvaluator,
     JSONValidityEvaluator,
 )
+from eval_harness.evaluators.tool import (
+    ToolArgumentEvaluator,
+    ToolExecutionEvaluator,
+    ToolSelectionEvaluator,
+)
 
 __all__ = [
     "Evaluator",
@@ -23,4 +28,7 @@ __all__ = [
     "JSONValidityEvaluator",
     "JSONSchemaEvaluator",
     "JSONFieldMatchEvaluator",
+    "ToolSelectionEvaluator",
+    "ToolArgumentEvaluator",
+    "ToolExecutionEvaluator",
 ]

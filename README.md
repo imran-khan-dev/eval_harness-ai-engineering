@@ -160,6 +160,118 @@ mypy eval_harness
 
 MIT
 
+## Tool Evaluation (M5.3)
+
+Eval Harness provides three evaluators for assessing tool usage in agent executions:
+
+### ToolSelectionEvaluator
+
+Evaluates whether the correct tools were selected by comparing expected tool calls against actual tool calls from trace events. Computes precision, recall, and F1 score.
+
+```python
+from eval_harness import ToolSelectionEvaluator, EvaluationCase, ExpectedToolCall
+from eval_harness.tracing import ExecutionTrace, TraceEvent, TraceEventType
+
+evaluator = ToolSelectionEvaluator()
+
+case = EvaluationCase(
+    input="Search for news and summarize",
+    expected_tool_calls=[
+        ExpectedToolCall(name="search", arguments={"query": "AI news"}),
+        ExpectedToolCall(name="summarize", arguments={"text": "..."}),
+    ],
+)
+
+trace = ExecutionTrace(case_id=case.id)
+trace.add_event(TraceEvent.tool_call(exec_id, "search", {"query": "AI news"}))
+trace.add_event(TraceEvent.tool_call(exec_id, "summarize", {"text": "..."}))
+trace.finalize()
+
+score = evaluator.evaluate(case, None, trace=trace)
+# score.value = 1.0 (F1)
+# score.details = {"precision": 1.0, "recall": 1.0, "f1": 1.0, "matched_tools": ["search", "summarize"], ...}
+```
+
+**Options**:
+- `count_duplicates=False`: Treat tool calls as sets (default). Use `True` for multiset counting.
+- `required_only=False`: Evaluate only required tool calls (those with `required=True`).
+
+### ToolArgumentEvaluator
+
+Evaluates whether tool call arguments match expected arguments. Supports exact matching and nested dictionary comparison.
+
+```python
+from eval_harness import ToolArgumentEvaluator
+
+evaluator = ToolArgumentEvaluator()  # exact_match=True by default
+
+case = EvaluationCase(
+    input="Test",
+    expected_tool_calls=[
+        ExpectedToolCall(name="search", arguments={"query": "test", "limit": 10}),
+    ],
+)
+
+trace = ExecutionTrace(case_id=case.id)
+trace.add_event(TraceEvent.tool_call(exec_id, "search", {"query": "test", "limit": 10}))
+trace.finalize()
+
+score = evaluator.evaluate(case, None, trace=trace)
+# score.value = 1.0 (all arguments match)
+# score.details["per_tool_results"]["search"][0]["match"] = True
+```
+
+**Options**:
+- `exact_match=True`: Require exact argument match. Set `False` for subset matching.
+- `required_only=False`: Evaluate only required tool calls.
+
+### ToolExecutionEvaluator
+
+Evaluates whether expected tool calls were executed and whether they succeeded or failed based on trace events (TOOL_RESPONSE or ERROR events).
+
+```python
+from eval_harness import ToolExecutionEvaluator
+
+evaluator = ToolExecutionEvaluator()
+
+case = EvaluationCase(
+    input="Test",
+    expected_tool_calls=[
+        ExpectedToolCall(name="search", arguments={"query": "test"}),
+        ExpectedToolCall(name="fetch", arguments={"url": "http://example.com"}),
+    ],
+)
+
+trace = ExecutionTrace(case_id=case.id)
+# Tool call + successful response
+trace.add_event(TraceEvent.tool_call(exec_id, "search", {"query": "test"}, correlation_id=corr_0))
+trace.add_event(TraceEvent.tool_response(exec_id, "search", {"results": [...]}, correlation_id=corr_0))
+# Tool call + failed response
+trace.add_event(TraceEvent.tool_call(exec_id, "fetch", {"url": "http://example.com"}, correlation_id=corr_1))
+trace.add_event(TraceEvent.tool_response(exec_id, "fetch", {"error": "timeout"}, correlation_id=corr_1))
+trace.finalize()
+
+score = evaluator.evaluate(case, None, trace=trace)
+# score.value = 0.5 (1 of 2 succeeded)
+# score.details["per_tool_results"][0]["succeeded"] = True
+# score.details["per_tool_results"][1]["succeeded"] = False
+```
+
+**Options**:
+- `required_only=False`: Evaluate only required tool calls.
+- `check_arguments=False`: When `True`, also verify arguments match (subset check) and count mismatches as failures.
+
+### Metric Types
+
+| Evaluator | Metric Type | Metric Name |
+|-----------|-------------|-------------|
+| ToolSelectionEvaluator | `tool_selection_accuracy` | `tool_selection_accuracy` |
+| ToolArgumentEvaluator | `tool_call_correctness` | `tool_argument_correctness` |
+| ToolExecutionEvaluator | `tool_call_correctness` | `tool_execution_correctness` |
+
+All evaluators follow the standard `Evaluator` protocol and return `MetricScore` objects with values in [0, 1], optional thresholds, and detailed breakdowns in `details`.
+
+
 ## Dataset Management (M2)
 
 Eval Harness provides robust dataset loading and validation capabilities for JSON and JSONL formats.
