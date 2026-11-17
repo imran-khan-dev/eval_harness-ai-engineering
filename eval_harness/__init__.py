@@ -17,6 +17,14 @@ from eval_harness.datasets.models import (
     ExpectedToolCall,
     ExpectedTrajectory,
 )
+from eval_harness.evaluators import (
+    BaseEvaluator,
+    ContainsEvaluator,
+    Evaluator,
+    ExactMatchEvaluator,
+    NormalizedExactMatchEvaluator,
+    StringSimilarityEvaluator,
+)
 from eval_harness.metrics.models import (
     AggregatedMetrics,
     EvaluationResult,
@@ -56,4 +64,10 @@ __all__ = [
     "ExperimentResult",
     "MetricScore",
     "AggregatedMetrics",
+    "Evaluator",
+    "BaseEvaluator",
+    "ExactMatchEvaluator",
+    "NormalizedExactMatchEvaluator",
+    "ContainsEvaluator",
+    "StringSimilarityEvaluator",
 ]
