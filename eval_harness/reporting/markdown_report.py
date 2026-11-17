@@ -527,6 +527,16 @@ class MarkdownReportGenerator:
         lines.append(f"Removed cases: {len(comparison.removed_cases)}")
         return chr(10).join(lines)
 
+    def generate_quality_gate(self, result: Any) -> str:
+        lines = ["# Quality Gate Report", ""]
+        lines.append(f"Overall: {result.status} (passed={result.passed})")
+        lines.append("")
+        lines.append("| Rule | Status | Actual | Threshold | Explanation |")
+        lines.append("|---|---|---|---|---|")
+        for c in result.checks:
+            lines.append(f"| {c.rule_id} | {c.status} | {c.actual_value} | {c.expected_threshold} | {c.explanation} |")
+        return chr(10).join(lines)
+
     def write_markdown(
         self, result: ExperimentResult | RunnerExperimentResult, filepath: str
     ) -> None:
