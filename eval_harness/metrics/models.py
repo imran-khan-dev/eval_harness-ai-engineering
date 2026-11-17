@@ -5,8 +5,11 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID, uuid4
+
+if TYPE_CHECKING:
+    pass
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -208,6 +211,46 @@ class EvaluationResult(BaseModel):
             score.passed for score in self.metric_scores if score.threshold is not None
         )
 
+    def aggregate_metrics(
+        self,
+        weights: dict[str, float] | None = None,
+        default_weight: float = 1.0,
+    ) -> dict[str, Any]:
+        """Aggregate metric scores for this case.
+
+        Args:
+            weights: Optional mapping of metric name to weight for weighted average.
+            default_weight: Default weight for metrics not in weights.
+
+        Returns:
+            Dictionary with overall, by_type, and by_name aggregation results.
+        """
+        # Import here to avoid circular import
+        from eval_harness.metrics.aggregation import aggregate_scores
+
+        return aggregate_scores(self.metric_scores, weights, default_weight)
+
+    def get_overall_score(
+        self,
+        weights: dict[str, float] | None = None,
+        default_weight: float = 1.0,
+    ) -> float:
+        """Get overall aggregated score for this case.
+
+        Args:
+            weights: Optional mapping of metric name to weight.
+            default_weight: Default weight for metrics not in weights.
+
+        Returns:
+            Overall mean score (weighted if weights provided).
+        """
+        result = self.aggregate_metrics(weights, default_weight)
+        from eval_harness.metrics.aggregation import AggregationResult
+
+        overall = result["overall"]
+        assert isinstance(overall, AggregationResult)
+        return overall.mean
+
     def finalize(
         self, status: EvaluationStatus | None = None, error: str | None = None
     ) -> None:
@@ -303,6 +346,51 @@ class ExperimentResult(BaseModel):
         if self.aggregated_metrics.total_cases == 0:
             return 0.0
         return self.aggregated_metrics.passed_cases / self.aggregated_metrics.total_cases
+
+    def aggregate_all_metrics(
+        self,
+        weights: dict[str, float] | None = None,
+        default_weight: float = 1.0,
+    ) -> dict[str, Any]:
+        """Aggregate all metric scores across all cases using MetricAggregator.
+
+        This provides more detailed aggregation than the built-in AggregatedMetrics,
+        including grouping by metric name and type, and optional weighted averaging.
+
+        Args:
+            weights: Optional mapping of metric name to weight for weighted average.
+            default_weight: Default weight for metrics not in weights.
+
+        Returns:
+            Dictionary with overall, by_type, and by_name aggregation results.
+        """
+        # Import here to avoid circular import
+        from eval_harness.metrics.aggregation import aggregate_scores
+
+        all_scores = []
+        for result in self.case_results:
+            all_scores.extend(result.metric_scores)
+
+        return aggregate_scores(all_scores, weights, default_weight)
+
+    def get_case_level_aggregates(
+        self,
+        weights: dict[str, float] | None = None,
+        default_weight: float = 1.0,
+    ) -> list[dict[str, Any]]:
+        """Get aggregated metrics for each individual case.
+
+        Args:
+            weights: Optional mapping of metric name to weight.
+            default_weight: Default weight for metrics not in weights.
+
+        Returns:
+            List of aggregation result dictionaries, one per case.
+        """
+        return [
+            result.aggregate_metrics(weights, default_weight)
+            for result in self.case_results
+        ]
 
     model_config = {
         "validate_assignment": True,
