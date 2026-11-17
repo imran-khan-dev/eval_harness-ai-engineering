@@ -1249,6 +1249,295 @@ print(f"Passed: {result.aggregated_metrics.passed_cases}")
 print(f"Overall score: {result.aggregate_all_metrics()['overall'].mean:.2f}")
 ```
 
+## Experiment Reporting (M7)
+
+Eval Harness provides reporting capabilities to convert experiment results into structured JSON reports or human-readable Markdown reports.
+
+### JSON Reports
+
+Generate detailed JSON reports for programmatic consumption:
+
+```python
+from eval_harness import (
+    ExperimentRunner,
+    EvaluationDataset,
+    EvaluationCase,
+    ExactMatchEvaluator,
+    JSONReportGenerator,
+)
+
+# ... run experiment ...
+result = runner.run_and_evaluate(dataset, config_name="qa_eval")
+
+# Generate JSON report
+report_gen = JSONReportGenerator(indent=2)
+json_report = report_gen.generate(result)
+
+# Or write directly to file
+report_gen.write_json(result, "experiment_report.json")
+
+# The JSON report includes:
+# - Experiment metadata (ID, config, dataset, timestamps)
+# - Execution summary (counts, pass rate, status breakdown)
+# - Metric summary (per-metric-type statistics)
+# - Aggregated metrics (mean, std, min, max, pass rates)
+# - Cost summary (total cost, token counts)
+# - Latency summary (avg, min, max)
+# - Per-case results with all metric scores
+```
+
+**Example JSON output structure:**
+```json
+{
+  "report_metadata": {
+    "generated_at": "2026-01-15T10:30:00.123456",
+    "report_format": "json",
+    "report_version": "1.0"
+  },
+  "experiment": {
+    "id": "uuid...",
+    "config_name": "qa_eval",
+    "dataset_name": "qa_dataset",
+    "status": "completed",
+    "started_at": "2026-01-15T10:29:00.000000",
+    "completed_at": "2026-01-15T10:30:00.000000",
+    "total_latency_ms": 1500.0
+  },
+  "execution_summary": {
+    "total_cases": 10,
+    "passed_cases": 8,
+    "failed_cases": 2,
+    "error_cases": 0,
+    "pass_rate": 0.8,
+    "status_breakdown": {"passed": 8, "failed": 2}
+  },
+  "metric_summary": {
+    "exact_match": {
+      "count": 10,
+      "mean": 0.85,
+      "min": 0.0,
+      "max": 1.0,
+      "pass_rate": 0.8
+    },
+    "string_similarity": {
+      "count": 10,
+      "mean": 0.92,
+      "min": 0.75,
+      "max": 1.0,
+      "pass_rate": 1.0
+    }
+  },
+  "cost_summary": {
+    "total_cost_usd": 0.0125,
+    "total_input_tokens": 5000,
+    "total_output_tokens": 2500,
+    "total_cached_tokens": 100,
+    "total_tokens": 7600
+  },
+  "latency_summary": {
+    "total_cases_with_latency": 10,
+    "avg_latency_ms": 150.0,
+    "min_latency_ms": 50.0,
+    "max_latency_ms": 500.0
+  },
+  "case_results": [...]
+}
+```
+
+### Markdown Reports
+
+Generate human-readable Markdown reports for GitHub, CI logs, or documentation:
+
+```python
+from eval_harness import MarkdownReportGenerator
+
+# Generate Markdown report
+report_gen = MarkdownReportGenerator(max_cases_in_table=50)
+markdown_report = report_gen.generate(result)
+
+# Or write directly to file
+report_gen.write_markdown(result, "experiment_report.md")
+
+# The Markdown report includes:
+# - Experiment summary with key metrics
+# - Overall results (counts, pass rate, latency, cost)
+# - Metric summary table (per-metric-type statistics)
+# - Cost and performance summary
+# - Per-case results table (for up to max_cases_in_table cases)
+# - Failed cases detail section
+# - Skipped cases section
+```
+
+**Example Markdown output:**
+```markdown
+# Experiment Report: qa_dataset
+
+**Config:** `qa_eval`  
+**Experiment ID:** `uuid...`  
+**Status:** ✅ COMPLETED  
+**Started:** 2026-01-15 10:29:00 UTC  
+**Completed:** 2026-01-15 10:30:00 UTC  
+
+## Summary
+
+- **Total Cases:** 10
+- **Passed:** 8 (80.0%)
+- **Failed:** 2
+- **Errors:** 0
+- **Total Latency:** 1.50 s
+- **Total Cost:** $0.012500
+- **Total Tokens:** 7,600 (input: 5,000, output: 2,500, cached: 100)
+- **Avg Latency/Case:** 150.0 ms
+
+### Status Breakdown
+
+- ✅ PASSED: 8
+- ❌ FAILED: 2
+
+## Metric Summary
+
+| Metric Type | Count | Mean | Min | Max | Pass Rate |
+|-------------|-------|------|-----|-----|-----------|
+| exact_match | 10 | 0.850 | 0.000 | 1.000 | 80.0% |
+| string_similarity | 10 | 0.920 | 0.750 | 1.000 | 100.0% |
+
+## Cost & Performance Summary
+
+- **Total Estimated Cost:** $0.012500
+- **Total Input Tokens:** 5,000
+- **Total Output Tokens:** 2,500
+- **Total Cached Tokens:** 100
+- **Avg Latency per Case:** 150.0 ms
+- **Min Latency:** 50.0 ms
+- **Max Latency:** 500.0 ms
+
+## Per-Case Results
+
+| Case ID | Status | Metrics | Output | Error |
+|---------|--------|---------|--------|-------|
+| `abc12345` | ✅ PASSED | exact_match: 1.00 ✓<br>string_similarity: 0.95 ✓ | Answer 1 | — |
+| `def67890` | ❌ FAILED | exact_match: 0.00 ✗ | Wrong Answer | Output mismatch |
+
+## Failed Cases Details
+
+### Case `def67890` (❌ FAILED)
+
+**Error:** Output mismatch
+**Metric Scores:**
+- exact_match (exact_match): 0.000 ✗ (threshold: 0.8)
+- string_similarity (semantic_similarity): 0.750 ✓ (threshold: 0.7)
+
+---
+
+*Report generated at 2026-01-15 10:30:00 UTC*
+```
+
+### Reporting from Runner Results
+
+You can also generate reports from `RunnerExperimentResult` (execution-only, without evaluator scores):
+
+```python
+from eval_harness import ExperimentRunner, MarkdownReportGenerator
+
+runner = ExperimentRunner(system=my_system)
+runner_result = runner.run(dataset)
+
+# Generate report from execution results
+report_gen = MarkdownReportGenerator()
+markdown = report_gen.generate(runner_result)
+```
+
+### Report Generator Options
+
+```python
+# JSON Report Generator
+JSONReportGenerator(
+    include_traces=False,  # Include full trace data (not yet implemented)
+    indent=2,              # JSON indentation
+)
+
+# Markdown Report Generator
+MarkdownReportGenerator(
+    include_traces=False,      # Include trace details (not yet implemented)
+    max_cases_in_table=50,     # Max cases to show in detail tables
+)
+```
+
+### Supported Result Types
+
+Both generators support:
+- `ExperimentResult` - Full evaluation results with metric scores
+- `RunnerExperimentResult` - Execution results without evaluator scores
+
+### Edge Cases Handled
+
+- **Empty experiments**: Reports show zero counts and "No metrics available"
+- **Missing optional data**: Gracefully handles missing traces, costs, latency
+- **Failed/Skipped evaluations**: Dedicated sections for failed and skipped cases
+- **Multiple metric types**: All 13 evaluator metric types supported
+- **Deterministic output**: Identical inputs produce identical reports
+
+### Known Limitations
+
+1. **No trace inclusion**: Full trace data not yet included in reports (use JSON for raw data)
+2. **No HTML/PDF output**: Only JSON and Markdown formats supported
+3. **No baseline comparison**: Historical comparison belongs to M8
+4. **No regression gates**: Pass/fail thresholds belong to M9
+5. **No CI integration**: CI-specific formatting belongs to M10
+6. **Large experiment tables**: Markdown tables limited to 50 cases by default (configurable)
+
+### Practical Example: Complete Evaluation with Reporting
+
+```python
+from eval_harness import (
+    EvaluationDataset, EvaluationCase, ExperimentRunner,
+    ExactMatchEvaluator, ContainsEvaluator, StringSimilarityEvaluator,
+    JSONReportGenerator, MarkdownReportGenerator,
+    SystemExecutionStatus, SystemExecutionResult,
+)
+from eval_harness.tracing import ExecutionTrace, TraceEvent, TokenUsage
+
+class SimpleQASystem:
+    def __init__(self):
+        self.answers = {"What is 2+2?": "4", "Capital of France?": "Paris"}
+    
+    def execute(self, case, **kwargs):
+        answer = self.answers.get(case.input, "Unknown")
+        trace = ExecutionTrace(case_id=case.id)
+        trace.add_event(TraceEvent.execution_start(case.id, case.id))
+        trace.add_event(TraceEvent.llm_call(case.id, case.input, "mock"))
+        trace.add_event(TraceEvent.llm_response(
+            case.id, answer, "mock",
+            token_usage=TokenUsage(prompt_tokens=20, completion_tokens=10)
+        ))
+        trace.add_event(TraceEvent.execution_end(case.id, "success"))
+        trace.finalize(status="success")
+        return SystemExecutionResult(
+            case_id=case.id, status=SystemExecutionStatus.SUCCESS,
+            prediction=answer, trace=trace
+        )
+
+dataset = EvaluationDataset(name="demo", cases=[
+    EvaluationCase(input="What is 2+2?", expected_output="4"),
+    EvaluationCase(input="Capital of France?", expected_output="Paris"),
+])
+
+runner = ExperimentRunner(
+    system=SimpleQASystem(),
+    evaluators=[ExactMatchEvaluator(), ContainsEvaluator(), StringSimilarityEvaluator()],
+)
+result = runner.run_and_evaluate(dataset, config_name="demo")
+
+# Generate reports
+json_gen = JSONReportGenerator()
+json_gen.write_json(result, "report.json")
+
+md_gen = MarkdownReportGenerator()
+md_gen.write_markdown(result, "report.md")
+
+print("Reports generated: report.json, report.md")
+```
+
 ### Known Limitations
 
 1. **Sequential execution only**: Cases are executed sequentially. No parallel execution support.
@@ -1256,7 +1545,7 @@ print(f"Overall score: {result.aggregate_all_metrics()['overall'].mean:.2f}")
 3. **No LLM-as-a-Judge**: Only deterministic evaluators are included.
 4. **Async thread pool**: Synchronous systems in async runner use default thread pool executor.
 5. **No persistence**: Results are in-memory only. No database integration.
-
+6. **Reporting limitations**: See reporting section above for details.
 
 ## License
 
