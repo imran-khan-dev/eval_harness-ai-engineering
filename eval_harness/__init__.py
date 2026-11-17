@@ -30,6 +30,9 @@ from eval_harness.evaluators import (
     ToolArgumentEvaluator,
     ToolExecutionEvaluator,
     ToolSelectionEvaluator,
+    TrajectoryCompletenessEvaluator,
+    TrajectoryMatchEvaluator,
+    TrajectoryOrderEvaluator,
 )
 from eval_harness.metrics.models import (
     AggregatedMetrics,
@@ -82,4 +85,7 @@ __all__ = [
     "ToolSelectionEvaluator",
     "ToolArgumentEvaluator",
     "ToolExecutionEvaluator",
+    "TrajectoryMatchEvaluator",
+    "TrajectoryOrderEvaluator",
+    "TrajectoryCompletenessEvaluator",
 ]

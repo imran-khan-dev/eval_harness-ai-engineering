@@ -17,6 +17,11 @@ from eval_harness.evaluators.tool import (
     ToolExecutionEvaluator,
     ToolSelectionEvaluator,
 )
+from eval_harness.evaluators.trajectory import (
+    TrajectoryCompletenessEvaluator,
+    TrajectoryMatchEvaluator,
+    TrajectoryOrderEvaluator,
+)
 
 __all__ = [
     "Evaluator",
@@ -31,4 +36,7 @@ __all__ = [
     "ToolSelectionEvaluator",
     "ToolArgumentEvaluator",
     "ToolExecutionEvaluator",
+    "TrajectoryMatchEvaluator",
+    "TrajectoryOrderEvaluator",
+    "TrajectoryCompletenessEvaluator",
 ]

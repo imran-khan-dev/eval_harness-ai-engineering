@@ -272,6 +272,130 @@ score = evaluator.evaluate(case, None, trace=trace)
 All evaluators follow the standard `Evaluator` protocol and return `MetricScore` objects with values in [0, 1], optional thresholds, and detailed breakdowns in `details`.
 
 
+## Trajectory Evaluation (M5.4)
+
+Eval Harness provides three evaluators for assessing agent execution trajectories:
+
+### TrajectoryMatchEvaluator
+
+Evaluates similarity between an expected trajectory (sequence of tool calls) and an actual trajectory from trace events. Supports exact matching, LCS-based partial matching, and configurable argument comparison.
+
+```python
+from eval_harness import TrajectoryMatchEvaluator, EvaluationCase, ExpectedTrajectory
+from eval_harness.tracing import ExecutionTrace, TraceEvent
+
+evaluator = TrajectoryMatchEvaluator(exact_match=False)  # LCS partial matching
+
+case = EvaluationCase(
+    input="Search for news and summarize",
+    expected_trajectory=ExpectedTrajectory(steps=[
+        {"tool": "search", "arguments": {"query": "AI news"}},
+        {"tool": "fetch", "arguments": {"url": "..."}},
+        {"tool": "summarize", "arguments": {"text": "..."}},
+    ]),
+)
+
+trace = ExecutionTrace(case_id=case.id)
+trace.add_event(TraceEvent.tool_call(exec_id, "search", {"query": "AI news"}))
+trace.add_event(TraceEvent.tool_call(exec_id, "summarize", {"text": "..."}))  # missing fetch
+trace.finalize()
+
+score = evaluator.evaluate(case, None, trace=trace)
+# score.value ≈ 0.67 (2/3 steps matched in order via LCS)
+# score.details = {"matched_count": 2, "expected_count": 3, "actual_count": 2,
+#                  "similarity": 0.67, "matched_steps": [...], ...}
+```
+
+**Options**:
+- `exact_match=True`: Require exact sequence match (default: False for LCS partial).
+- `ignore_arguments=False`: When True, compare only tool names, not arguments.
+- `case_sensitive=True`: When False, match tool names case-insensitively.
+- `partial_match_mode=False`: When True with `exact_match=False`, use LCS similarity.
+
+### TrajectoryOrderEvaluator
+
+Evaluates whether expected tools were called in the correct relative order. Returns 1.0 if all expected tools appear in order, 0.5 if all present but wrong order, 0.0 if any required tool missing (when `require_all_expected=True`).
+
+```python
+from eval_harness import TrajectoryOrderEvaluator, EvaluationCase, ExpectedTrajectory
+from eval_harness.tracing import ExecutionTrace, TraceEvent
+
+evaluator = TrajectoryOrderEvaluator(require_all_expected=True)
+
+case = EvaluationCase(
+    input="Search, fetch, then summarize",
+    expected_trajectory=ExpectedTrajectory(steps=[
+        {"tool": "search"},
+        {"tool": "fetch"},
+        {"tool": "summarize"},
+    ]),
+)
+
+trace = ExecutionTrace(case_id=case.id)
+trace.add_event(TraceEvent.tool_call(exec_id, "search", {}))
+trace.add_event(TraceEvent.tool_call(exec_id, "summarize", {}))  # wrong order
+trace.add_event(TraceEvent.tool_call(exec_id, "fetch", {}))
+trace.finalize()
+
+score = evaluator.evaluate(case, None, trace=trace)
+# score.value = 0.5 (all present but order violated)
+# score.details = {"order_correct": False, "all_present": True,
+#                  "order_violations": [{"expected": "fetch", "actual": "summarize", "index": 1}], ...}
+```
+
+**Options**:
+- `require_all_expected=True`: When True, missing any expected tool yields 0.0.
+- `case_sensitive=True`: When False, match tool names case-insensitively.
+
+### TrajectoryCompletenessEvaluator
+
+Evaluates what fraction of expected trajectory steps were completed successfully. Considers tool calls with corresponding successful responses as completed. Optional penalty for failed executions.
+
+```python
+from eval_harness import TrajectoryCompletenessEvaluator, EvaluationCase, ExpectedTrajectory
+from eval_harness.tracing import ExecutionTrace, TraceEvent
+
+evaluator = TrajectoryCompletenessEvaluator(penalize_failures=True)
+
+case = EvaluationCase(
+    input="Search and summarize",
+    expected_trajectory=ExpectedTrajectory(steps=[
+        {"tool": "search", "arguments": {"query": "test"}},
+        {"tool": "summarize", "arguments": {"text": "..."}},
+    ]),
+)
+
+trace = ExecutionTrace(case_id=case.id)
+# search: call + success
+trace.add_event(TraceEvent.tool_call(exec_id, "search", {"query": "test"}, correlation_id="cid1"))
+trace.add_event(TraceEvent.tool_response(exec_id, "search", {"results": [...]}, correlation_id="cid1"))
+# summarize: call + failure
+trace.add_event(TraceEvent.tool_call(exec_id, "summarize", {"text": "..."}, correlation_id="cid2"))
+trace.add_event(TraceEvent.tool_response(exec_id, "summarize", {"error": "timeout"}, correlation_id="cid2"))
+trace.finalize()
+
+score = evaluator.evaluate(case, None, trace=trace)
+# score.value = 0.0 (1/2 completed, but failure penalty zeroes score)
+# score.details = {"completed_count": 1, "total_expected": 2, "completeness": 0.5,
+#                  "failed_tools": ["summarize"], "penalty_applied": True, ...}
+```
+
+**Options**:
+- `penalize_failures=True`: When True, any failed expected tool reduces score to 0.0.
+- `case_sensitive=True`: When False, match tool names case-insensitively.
+- `require_all_for_full_score=False`: When True, only perfect completion yields 1.0.
+
+### Metric Types
+
+| Evaluator | Metric Type | Metric Name |
+|-----------|-------------|-------------|
+| TrajectoryMatchEvaluator | `trajectory_similarity` | `trajectory_match` |
+| TrajectoryOrderEvaluator | `trajectory_similarity` | `trajectory_order` |
+| TrajectoryCompletenessEvaluator | `trajectory_similarity` | `trajectory_completeness` |
+
+All trajectory evaluators follow the standard `Evaluator` protocol and return `MetricScore` objects with values in [0, 1], optional thresholds, and detailed breakdowns in `details`.
+
+
 ## Dataset Management (M2)
 
 Eval Harness provides robust dataset loading and validation capabilities for JSON and JSONL formats.
