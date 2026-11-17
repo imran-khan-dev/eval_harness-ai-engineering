@@ -1030,3 +1030,234 @@ print(f"Trajectory valid: {validation.is_valid}")
 5. **CostEstimate model attribution**: When aggregating costs from multiple models, `model_name` and `pricing_version` retain only the first model's values (for backward compatibility). Use `model_names` and `pricing_versions` lists for complete attribution.
 
 6. **No automatic cost estimation**: The recorder does not automatically estimate costs from token usage. Costs must be computed via `ModelPricingRegistry` and attached to events manually.
+
+
+## Experiment Runner (M6)
+
+Eval Harness provides an `ExperimentRunner` for executing systems against evaluation datasets with built-in evaluator integration, failure isolation, and async support.
+
+### SystemUnderEvaluation Interface
+
+The `SystemUnderEvaluation` protocol defines a provider-agnostic interface for any AI system:
+
+```python
+from eval_harness import SystemUnderEvaluation, BaseSystem, EvaluationCase
+from eval_harness.runner.models import SystemExecutionResult, SystemExecutionStatus
+from eval_harness.tracing.models import ExecutionTrace, TraceEvent
+
+class MyQASystem(BaseSystem):
+    def execute(self, case: EvaluationCase, **kwargs) -> SystemExecutionResult:
+        # Your system logic here
+        answer = my_llm(case.input)
+        
+        # Optionally record trace
+        trace = ExecutionTrace(case_id=case.id)
+        trace.add_event(TraceEvent.execution_start(case.id, case.id))
+        trace.add_event(TraceEvent.llm_call(case.id, case.input, "my-model"))
+        trace.add_event(TraceEvent.llm_response(
+            case.id, answer, "my-model",
+            token_usage=TokenUsage(prompt_tokens=100, completion_tokens=50)
+        ))
+        trace.add_event(TraceEvent.execution_end(case.id, "success"))
+        trace.finalize(status="success")
+        
+        return SystemExecutionResult(
+            case_id=case.id,
+            status=SystemExecutionStatus.SUCCESS,
+            prediction=answer,
+            trace=trace,
+        )
+```
+
+### Running Experiments
+
+```python
+from eval_harness import ExperimentRunner, EvaluationDataset, EvaluationCase
+
+# Create dataset
+dataset = EvaluationDataset(
+    name="qa_test",
+    cases=[
+        EvaluationCase(input="What is 2+2?", expected_output="4"),
+        EvaluationCase(input="Capital of France?", expected_output="Paris"),
+    ],
+)
+
+# Create system and runner
+system = MyQASystem()
+runner = ExperimentRunner(system=system)
+
+# Synchronous execution
+result = runner.run(dataset)
+
+# Check results
+print(f"Total cases: {result.total_cases}")
+print(f"Successful: {result.successful_cases}")
+print(f"Failed: {result.failed_cases}")
+print(f"Success rate: {result.success_rate:.1%}")
+
+# Access individual execution results
+for exec_result in result.execution_results:
+    print(f"Case {exec_result.case_id}: {exec_result.status}")
+    if exec_result.prediction:
+        print(f"  Prediction: {exec_result.prediction}")
+    if exec_result.trace:
+        print(f"  Tokens: {exec_result.token_usage.total_tokens}")
+        print(f"  Cost: ${exec_result.cost_estimate.total_cost_usd:.6f}")
+```
+
+### Asynchronous Execution
+
+For async systems, use `run_async()`:
+
+```python
+class AsyncQASystem(BaseSystem):
+    async def execute(self, case: EvaluationCase, **kwargs) -> SystemExecutionResult:
+        answer = await my_async_llm(case.input)
+        # ... create result with trace ...
+        return SystemExecutionResult(...)
+
+runner = ExperimentRunner(system=AsyncQASystem())
+result = await runner.run_async(dataset)
+```
+
+Synchronous systems work with `run_async()` too - they're executed in a thread pool.
+
+### Running with Evaluators
+
+Configure evaluators to automatically score predictions:
+
+```python
+from eval_harness import (
+    ExperimentRunner,
+    ExactMatchEvaluator,
+    ContainsEvaluator,
+    StringSimilarityEvaluator,
+)
+
+evaluators = [
+    ExactMatchEvaluator(),
+    ContainsEvaluator(),
+    StringSimilarityEvaluator(),
+]
+
+runner = ExperimentRunner(system=MyQASystem(), evaluators=evaluators)
+result = runner.run_and_evaluate(dataset, config_name="qa_eval")
+
+# Result is an ExperimentResult with metric scores
+for case_result in result.case_results:
+    print(f"Case {case_result.case_id}: {case_result.status}")
+    for score in case_result.metric_scores:
+        print(f"  {score.name}: {score.value:.2f} (passed: {score.passed})")
+
+# Experiment-level aggregation
+print(f"Overall pass rate: {result.get_pass_rate():.1%}")
+agg = result.aggregate_all_metrics()
+print(f"Overall mean: {agg['overall'].mean:.2f}")
+```
+
+### Async Evaluation
+
+```python
+result = await runner.run_and_evaluate_async(dataset, config_name="qa_eval")
+```
+
+### Failure Handling
+
+The runner isolates failures per case - one case failing doesn't stop others:
+
+```python
+class MixedSystem(BaseSystem):
+    def execute(self, case, **kwargs):
+        if case.input == "fail":
+            raise RuntimeError("System error")
+        return SystemExecutionResult(case_id=case.id, status=SystemExecutionStatus.SUCCESS, prediction="OK")
+
+runner = ExperimentRunner(system=MixedSystem(), evaluators=[ExactMatchEvaluator()])
+result = runner.run_and_evaluate(dataset)
+
+# All cases have results, even failed ones
+for case_result in result.case_results:
+    if case_result.status == EvaluationStatus.ERROR:
+        print(f"Case {case_result.case_id} failed: {case_result.error}")
+        # Evaluator scores show "execution_failed" reason
+        for score in case_result.metric_scores:
+            print(f"  {score.name}: skipped (reason: {score.details['reason']})")
+```
+
+### Result Models
+
+- **SystemExecutionResult**: Raw system output with trace, tokens, cost, latency
+- **RunnerExperimentResult**: Collection of execution results with run-level aggregates
+- **EvaluationResult**: Per-case evaluation with metric scores
+- **ExperimentResult**: Complete experiment with per-case scores and experiment-level aggregation
+
+Convert between them:
+
+```python
+# RunnerExperimentResult -> ExperimentResult (minimal, no evaluator scores)
+metrics_result = runner_result.to_metrics_experiment_result(config_name="my_eval")
+
+# Or use run_and_evaluate() for full evaluation with scores
+result = runner.run_and_evaluate(dataset)
+```
+
+### Practical Example: End-to-End Evaluation
+
+```python
+from eval_harness import (
+    EvaluationDataset, EvaluationCase, ExperimentRunner,
+    ExactMatchEvaluator, ContainsEvaluator, StringSimilarityEvaluator,
+    SystemExecutionStatus, SystemExecutionResult,
+)
+from eval_harness.tracing import ExecutionTrace, TraceEvent, TokenUsage
+
+class SimpleQASystem:
+    def __init__(self):
+        self.answers = {"What is 2+2?": "4", "Capital of France?": "Paris"}
+    
+    def execute(self, case, **kwargs):
+        answer = self.answers.get(case.input, "Unknown")
+        trace = ExecutionTrace(case_id=case.id)
+        trace.add_event(TraceEvent.execution_start(case.id, case.id))
+        trace.add_event(TraceEvent.llm_call(case.id, case.input, "mock"))
+        trace.add_event(TraceEvent.llm_response(
+            case.id, answer, "mock",
+            token_usage=TokenUsage(prompt_tokens=20, completion_tokens=10)
+        ))
+        trace.add_event(TraceEvent.execution_end(case.id, "success"))
+        trace.finalize(status="success")
+        return SystemExecutionResult(
+            case_id=case.id, status=SystemExecutionStatus.SUCCESS,
+            prediction=answer, trace=trace
+        )
+
+dataset = EvaluationDataset(name="demo", cases=[
+    EvaluationCase(input="What is 2+2?", expected_output="4"),
+    EvaluationCase(input="Capital of France?", expected_output="Paris"),
+])
+
+runner = ExperimentRunner(
+    system=SimpleQASystem(),
+    evaluators=[ExactMatchEvaluator(), ContainsEvaluator(), StringSimilarityEvaluator()],
+)
+result = runner.run_and_evaluate(dataset, config_name="demo")
+
+print(f"Dataset: {result.dataset_name}")
+print(f"Cases: {result.aggregated_metrics.total_cases}")
+print(f"Passed: {result.aggregated_metrics.passed_cases}")
+print(f"Overall score: {result.aggregate_all_metrics()['overall'].mean:.2f}")
+```
+
+### Known Limitations
+
+1. **Sequential execution only**: Cases are executed sequentially. No parallel execution support.
+2. **No retry mechanism**: Failed cases are not retried automatically.
+3. **No LLM-as-a-Judge**: Only deterministic evaluators are included.
+4. **Async thread pool**: Synchronous systems in async runner use default thread pool executor.
+5. **No persistence**: Results are in-memory only. No database integration.
+
+
+## License
+
+MIT

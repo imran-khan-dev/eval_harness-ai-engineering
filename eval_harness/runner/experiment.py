@@ -192,7 +192,7 @@ class ExperimentRunner:
             raise
         except Exception as e:
             # Convert ordinary exceptions to ERROR execution results
-            return SystemExecutionResult(
+            error_result = SystemExecutionResult(
                 case_id=case.id,
                 run_id=self.run_id,
                 status=SystemExecutionStatus.ERROR,
@@ -205,10 +205,12 @@ class ExperimentRunner:
                 completed_at=None,
                 metadata={},
             )
+            error_result.finalize()
+            return error_result
 
         # Validate system return value
         if not isinstance(result, SystemExecutionResult):
-            return SystemExecutionResult(
+            error_result = SystemExecutionResult(
                 case_id=case.id,
                 run_id=self.run_id,
                 status=SystemExecutionStatus.ERROR,
@@ -224,10 +226,14 @@ class ExperimentRunner:
                 completed_at=None,
                 metadata={},
             )
+            error_result.finalize()
+            return error_result
 
         # Ensure the result has the correct run_id
         if result.run_id is None:
             result.run_id = self.run_id
+        # Finalize the execution result
+        result.finalize()
         return result
 
     async def _execute_case_async(
@@ -270,7 +276,7 @@ class ExperimentRunner:
             raise
         except Exception as e:
             # Convert ordinary exceptions to ERROR execution results
-            return SystemExecutionResult(
+            error_result = SystemExecutionResult(
                 case_id=case.id,
                 run_id=self.run_id,
                 status=SystemExecutionStatus.ERROR,
@@ -283,12 +289,14 @@ class ExperimentRunner:
                 completed_at=None,
                 metadata={},
             )
+            error_result.finalize()
+            return error_result
 
         result = cast(SystemExecutionResult, result)
 
         # Validate system return value
         if not isinstance(result, SystemExecutionResult):
-            return SystemExecutionResult(
+            error_result = SystemExecutionResult(
                 case_id=case.id,
                 run_id=self.run_id,
                 status=SystemExecutionStatus.ERROR,
@@ -304,10 +312,14 @@ class ExperimentRunner:
                 completed_at=None,
                 metadata={},
             )
+            error_result.finalize()
+            return error_result
 
         # Ensure the result has the correct run_id
         if result.run_id is None:
             result.run_id = self.run_id
+        # Finalize the execution result
+        result.finalize()
         return result
 
     def _evaluate_results(

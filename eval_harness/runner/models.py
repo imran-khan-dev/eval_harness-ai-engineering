@@ -96,11 +96,10 @@ class SystemExecutionResult(BaseModel):
     ) -> None:
         """Mark the execution as complete.
 
-        Args:
-            status: Optional status override.
-            error: Optional error message. If provided and status is not
-                   explicitly set, status becomes ERROR.
+        Idempotent: subsequent calls after the first have no effect.
         """
+        if self.completed_at is not None:
+            return
         self.completed_at = datetime.now(timezone.utc)
         if status:
             self.status = status
