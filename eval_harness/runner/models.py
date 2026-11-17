@@ -156,7 +156,12 @@ class RunnerExperimentResult(BaseModel):
         self.execution_results.append(result)
 
     def finalize(self, status: str = "completed", error: str | None = None) -> None:
-        """Mark the experiment as complete and compute aggregates."""
+        """Mark the experiment as complete and compute aggregates.
+
+        Idempotent: subsequent calls after the first have no effect.
+        """
+        if self.completed_at is not None:
+            return
         self.completed_at = datetime.now(timezone.utc)
         self.status = status
         self.error = error

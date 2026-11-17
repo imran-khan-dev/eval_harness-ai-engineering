@@ -187,12 +187,11 @@ class ExperimentRunner:
 
         try:
             result = self.system.execute(case, **kwargs)
-            # Ensure the result has the correct run_id
-            if result.run_id is None:
-                result.run_id = self.run_id
-            return result
+        except (KeyboardInterrupt, SystemExit):
+            # Re-raise process-control exceptions to allow proper shutdown
+            raise
         except Exception as e:
-            # Convert exceptions to ERROR execution results
+            # Convert ordinary exceptions to ERROR execution results
             return SystemExecutionResult(
                 case_id=case.id,
                 run_id=self.run_id,
@@ -206,6 +205,30 @@ class ExperimentRunner:
                 completed_at=None,
                 metadata={},
             )
+
+        # Validate system return value
+        if not isinstance(result, SystemExecutionResult):
+            return SystemExecutionResult(
+                case_id=case.id,
+                run_id=self.run_id,
+                status=SystemExecutionStatus.ERROR,
+                error=(
+                    f"System returned invalid type: {type(result).__name__}, "
+                    "expected SystemExecutionResult"
+                ),
+                prediction=None,
+                trace=None,
+                latency_ms=None,
+                token_usage=None,
+                cost_estimate=None,
+                completed_at=None,
+                metadata={},
+            )
+
+        # Ensure the result has the correct run_id
+        if result.run_id is None:
+            result.run_id = self.run_id
+        return result
 
     async def _execute_case_async(
         self,
@@ -239,14 +262,14 @@ class ExperimentRunner:
                 result = await loop.run_in_executor(
                     None, lambda: execute_method(case, **kwargs)
                 )
-            result = cast(SystemExecutionResult, result)
-
-            # Ensure the result has the correct run_id
-            if result.run_id is None:
-                result.run_id = self.run_id
-            return result
+        except asyncio.CancelledError:
+            # Re-raise cancellation - do not convert to error result
+            raise
+        except (KeyboardInterrupt, SystemExit):
+            # Re-raise other process-control exceptions
+            raise
         except Exception as e:
-            # Convert exceptions to ERROR execution results
+            # Convert ordinary exceptions to ERROR execution results
             return SystemExecutionResult(
                 case_id=case.id,
                 run_id=self.run_id,
@@ -260,6 +283,32 @@ class ExperimentRunner:
                 completed_at=None,
                 metadata={},
             )
+
+        result = cast(SystemExecutionResult, result)
+
+        # Validate system return value
+        if not isinstance(result, SystemExecutionResult):
+            return SystemExecutionResult(
+                case_id=case.id,
+                run_id=self.run_id,
+                status=SystemExecutionStatus.ERROR,
+                error=(
+                    f"System returned invalid type: {type(result).__name__}, "
+                    "expected SystemExecutionResult"
+                ),
+                prediction=None,
+                trace=None,
+                latency_ms=None,
+                token_usage=None,
+                cost_estimate=None,
+                completed_at=None,
+                metadata={},
+            )
+
+        # Ensure the result has the correct run_id
+        if result.run_id is None:
+            result.run_id = self.run_id
+        return result
 
     def _evaluate_results(
         self,
@@ -282,7 +331,7 @@ class ExperimentRunner:
             dataset_name=runner_result.dataset_name,
             total_tokens=None,
             total_cost=None,
-            completed_at=runner_result.completed_at,
+            completed_at=None,  # Will be set by finalize()
             error=runner_result.error,
         )
         exp_result.id = runner_result.id
@@ -357,8 +406,20 @@ class ExperimentRunner:
                         # Prepare evaluator kwargs based on evaluator type
                         eval_kwargs = self._get_evaluator_kwargs(evaluator, case, exec_result)
                         score = evaluator.evaluate(case, exec_result.prediction, **eval_kwargs)
+                        # Validate evaluator return value
+                        if not isinstance(score, MetricScore):
+                            raise TypeError(
+                                f"Evaluator {evaluator.name} returned invalid type: "
+                                f"{type(score).__name__}, expected MetricScore"
+                            )
                         eval_result.add_metric_score(score)
                         metric_aggregator.add_score(score)
+                    except asyncio.CancelledError:
+                        # Re-raise cancellation during evaluation
+                        raise
+                    except (KeyboardInterrupt, SystemExit):
+                        # Re-raise other process-control exceptions
+                        raise
                     except Exception as e:
                         # Evaluator failed - record error but continue with other evaluators
                         error_score = MetricScore(
@@ -370,6 +431,7 @@ class ExperimentRunner:
                             details={
                                 "reason": "evaluator_exception",
                                 "error": f"{type(e).__name__}: {e}",
+                                "evaluator_type": type(evaluator).__name__,
                             },
                             metadata={"case_id": str(case.id)},
                         )

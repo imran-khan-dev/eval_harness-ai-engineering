@@ -9,7 +9,11 @@ import pytest
 from pydantic import ValidationError
 
 from eval_harness.datasets.models import EvaluationCase, EvaluationDataset
-from eval_harness.metrics.models import EvaluationStatus
+from eval_harness.metrics.models import (
+    EvaluationResult,
+    EvaluationStatus,
+    ExperimentResult,
+)
 from eval_harness.runner import ExperimentRunner
 from eval_harness.runner.models import (
     RunnerExperimentResult,
@@ -599,7 +603,6 @@ class TestRunnerExperimentResult:
         assert metrics_result.dataset_name == "test_dataset"
         assert metrics_result.id == result.id
         assert len(metrics_result.case_results) == 2
-        from eval_harness.metrics.models import EvaluationStatus
         assert metrics_result.case_results[0].status == EvaluationStatus.PASSED
         assert metrics_result.case_results[1].status == EvaluationStatus.ERROR
 
@@ -1384,3 +1387,232 @@ class TestExperimentRunnerEvaluation:
         assert len(error_result.metric_scores) == 1
         assert error_result.metric_scores[0].details.get("reason") == "execution_failed"
         assert error_result.metric_scores[0].passed is None
+
+
+class TestExperimentRunnerFailureHandling:
+    """Tests for failure handling and execution isolation (M6.4)."""
+
+    def setup_method(self) -> None:
+        self.case1 = EvaluationCase(input="Test 1")
+        self.case2 = EvaluationCase(input="Test 2")
+        self.dataset = EvaluationDataset(name="failure_test", cases=[self.case1, self.case2])
+
+    def test_sync_keyboard_interrupt_reraised(self) -> None:
+        """Test that KeyboardInterrupt is re-raised in sync execution."""
+
+        class InterruptingSystem(BaseSystem):
+            def execute(self, case: EvaluationCase, **kwargs: Any) -> SystemExecutionResult:
+                raise KeyboardInterrupt("Interrupted")
+
+        system = InterruptingSystem()
+        runner = ExperimentRunner(system=system)
+
+        with pytest.raises(KeyboardInterrupt):
+            runner.run(self.dataset)
+
+    def test_sync_system_exit_reraised(self) -> None:
+        """Test that SystemExit is re-raised in sync execution."""
+
+        class ExitingSystem(BaseSystem):
+            def execute(self, case: EvaluationCase, **kwargs: Any) -> SystemExecutionResult:
+                raise SystemExit("Exiting")
+
+        system = ExitingSystem()
+        runner = ExperimentRunner(system=system)
+
+        with pytest.raises(SystemExit):
+            runner.run(self.dataset)
+
+    @pytest.mark.asyncio
+    async def test_async_cancelled_error_reraised(self) -> None:
+        """Test that asyncio.CancelledError is re-raised in async execution."""
+
+        class CancellingSystem(BaseSystem):
+            async def execute(self, case: EvaluationCase, **kwargs: Any) -> SystemExecutionResult:
+                raise asyncio.CancelledError()
+
+        system = CancellingSystem()
+        runner = ExperimentRunner(system=system)
+
+        with pytest.raises(asyncio.CancelledError):
+            await runner.run_async(self.dataset)
+
+    @pytest.mark.asyncio
+    async def test_async_keyboard_interrupt_reraised(self) -> None:
+        """Test that KeyboardInterrupt is re-raised in async execution."""
+
+        class InterruptingAsyncSystem(BaseSystem):
+            async def execute(self, case: EvaluationCase, **kwargs: Any) -> SystemExecutionResult:
+                raise KeyboardInterrupt("Interrupted")
+
+        system = InterruptingAsyncSystem()
+        runner = ExperimentRunner(system=system)
+
+        with pytest.raises(KeyboardInterrupt):
+            await runner.run_async(self.dataset)
+
+    @pytest.mark.asyncio
+    async def test_async_system_exit_reraised(self) -> None:
+        """Test that SystemExit is re-raised in async execution."""
+
+        class ExitingAsyncSystem(BaseSystem):
+            async def execute(self, case: EvaluationCase, **kwargs: Any) -> SystemExecutionResult:
+                raise SystemExit("Exiting")
+
+        system = ExitingAsyncSystem()
+        runner = ExperimentRunner(system=system)
+
+        with pytest.raises(SystemExit):
+            await runner.run_async(self.dataset)
+
+    def test_invalid_system_return_value_sync(self) -> None:
+        """Test that invalid sync system return value is handled gracefully."""
+
+        class InvalidReturnSystem(BaseSystem):
+            def execute(self, case: EvaluationCase, **kwargs: Any) -> Any:
+                return "not a SystemExecutionResult"
+
+        system = InvalidReturnSystem()
+        runner = ExperimentRunner(system=system)
+        result = runner.run(self.dataset)
+
+        assert result.total_cases == 2
+        assert result.failed_cases == 2
+        for exec_result in result.execution_results:
+            assert exec_result.status == SystemExecutionStatus.ERROR
+            assert "invalid type" in exec_result.error.lower()
+
+    @pytest.mark.asyncio
+    async def test_invalid_system_return_value_async(self) -> None:
+        """Test that invalid async system return value is handled gracefully."""
+
+        class InvalidReturnAsyncSystem(BaseSystem):
+            async def execute(self, case: EvaluationCase, **kwargs: Any) -> Any:
+                return "not a SystemExecutionResult"
+
+        system = InvalidReturnAsyncSystem()
+        runner = ExperimentRunner(system=system)
+        result = await runner.run_async(self.dataset)
+
+        assert result.total_cases == 2
+        assert result.failed_cases == 2
+        for exec_result in result.execution_results:
+            assert exec_result.status == SystemExecutionStatus.ERROR
+            assert "invalid type" in exec_result.error.lower()
+
+    def test_invalid_evaluator_return_value(self) -> None:
+        """Test that invalid evaluator return value is handled gracefully."""
+        from eval_harness.evaluators import ExactMatchEvaluator
+
+        class InvalidEvaluator(ExactMatchEvaluator):
+            def evaluate(self, case, prediction, **kwargs):
+                return "not a MetricScore"
+
+        system = MockSystem(prediction="Out 1")
+        evaluators = [InvalidEvaluator()]
+        runner = ExperimentRunner(system=system, evaluators=evaluators)
+        result = runner.run_and_evaluate(self.dataset)
+
+        assert len(result.case_results) == 2
+        for eval_result in result.case_results:
+            assert eval_result.status == EvaluationStatus.PASSED
+            for score in eval_result.metric_scores:
+                assert score.details.get("reason") == "evaluator_exception"
+                assert "TypeError" in score.details.get("error", "")
+                assert score.passed is False
+                assert score.value == 0.0
+
+    @pytest.mark.asyncio
+    async def test_async_cancellation_during_evaluation(self) -> None:
+        """Test that async cancellation during evaluation is re-raised."""
+        from eval_harness.evaluators import ExactMatchEvaluator
+
+        class CancellingEvaluator(ExactMatchEvaluator):
+            def evaluate(self, case, prediction, **kwargs):
+                raise asyncio.CancelledError()
+
+        system = MockSystem(prediction="Out 1")
+        evaluators = [CancellingEvaluator()]
+        runner = ExperimentRunner(system=system, evaluators=evaluators)
+
+        with pytest.raises(asyncio.CancelledError):
+            await runner.run_and_evaluate_async(self.dataset)
+
+    def test_idempotent_finalize_runner_result(self) -> None:
+        """Test that RunnerExperimentResult.finalize is idempotent."""
+        runner_result = RunnerExperimentResult(
+            dataset_id=uuid4(),
+            dataset_name="test",
+        )
+        runner_result.add_execution_result(
+            SystemExecutionResult(
+                case_id=self.case1.id,
+                status=SystemExecutionStatus.SUCCESS,
+                prediction="Out",
+            )
+        )
+
+        # First finalize
+        runner_result.finalize(status="completed")
+        first_completed_at = runner_result.completed_at
+        first_status = runner_result.status
+
+        # Second finalize should not change anything
+        runner_result.finalize(status="different_status", error="some error")
+        second_completed_at = runner_result.completed_at
+        second_status = runner_result.status
+
+        assert first_completed_at == second_completed_at
+        assert first_status == second_status
+        assert runner_result.error is None  # error not updated on second call
+
+    def test_idempotent_finalize_experiment_result(self) -> None:
+        """Test that ExperimentResult.finalize is idempotent."""
+        exp_result = ExperimentResult(
+            config_name="test",
+            dataset_name="test",
+        )
+        exp_result.add_case_result(
+            EvaluationResult(
+                case_id=self.case1.id,
+                status=EvaluationStatus.PASSED,
+            )
+        )
+
+        # First finalize
+        exp_result.finalize(status="completed")
+        first_completed_at = exp_result.completed_at
+        first_status = exp_result.status
+        first_total_cases = exp_result.aggregated_metrics.total_cases
+
+        # Second finalize should not change anything
+        exp_result.finalize(status="different_status", error="some error")
+        second_completed_at = exp_result.completed_at
+        second_status = exp_result.status
+        second_total_cases = exp_result.aggregated_metrics.total_cases
+
+        assert first_completed_at == second_completed_at
+        assert first_status == second_status
+        assert first_total_cases == second_total_cases
+        assert exp_result.error is None  # error not updated on second call
+
+    def test_idempotent_finalize_evaluation_result(self) -> None:
+        """Test that EvaluationResult.finalize is idempotent."""
+        eval_result = EvaluationResult(
+            case_id=self.case1.id,
+            status=EvaluationStatus.PASSED,
+        )
+
+        # First finalize
+        eval_result.finalize(status=EvaluationStatus.PASSED)
+        first_completed_at = eval_result.completed_at
+        first_status = eval_result.status
+
+        # Second finalize should not change anything
+        eval_result.finalize(status=EvaluationStatus.ERROR, error="some error")
+        second_completed_at = eval_result.completed_at
+        second_status = eval_result.status
+
+        assert first_completed_at == second_completed_at
+        assert first_status == second_status
+        assert eval_result.error is None  # error not updated on second call

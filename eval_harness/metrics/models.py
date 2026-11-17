@@ -254,7 +254,12 @@ class EvaluationResult(BaseModel):
     def finalize(
         self, status: EvaluationStatus | None = None, error: str | None = None
     ) -> None:
-        """Mark the evaluation as complete."""
+        """Mark the evaluation as complete.
+
+        Idempotent: subsequent calls after the first have no effect.
+        """
+        if self.completed_at is not None:
+            return
         self.completed_at = datetime.now(timezone.utc)
         if status:
             self.status = status
@@ -317,7 +322,12 @@ class ExperimentResult(BaseModel):
             self.total_latency_ms += result.latency_ms
 
     def finalize(self, status: str = "completed", error: str | None = None) -> None:
-        """Mark the experiment as complete and compute aggregates."""
+        """Mark the experiment as complete and compute aggregates.
+
+        Idempotent: subsequent calls after the first have no effect.
+        """
+        if self.completed_at is not None:
+            return
         self.completed_at = datetime.now(timezone.utc)
         self.status = status
         self.error = error
