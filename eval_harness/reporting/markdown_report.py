@@ -510,6 +510,23 @@ class MarkdownReportGenerator:
 
         return "\n".join(lines)
 
+    def generate_comparison(self, comparison: Any) -> str:
+        lines = ["# Baseline Comparison Report", ""]
+        lines.append(f"**Baseline:** {comparison.baseline.experiment_id}")
+        lines.append(f"**Current:** {comparison.current.experiment_id}")
+        lines.append("")
+        lines.append("## Metric Comparisons")
+        lines.append("| Metric | Baseline | Current | Diff | Change | Outcome |")
+        lines.append("|---|---|---|---|---|---|")
+        for m in comparison.metric_comparisons:
+            lines.append(f"| {m.name} | {m.baseline_value} | {m.current_value} | {m.absolute_difference} | {m.direction} | {m.outcome} |")
+        lines.append("")
+        lines.append(f"Improved cases: {len(comparison.improved_cases)}")
+        lines.append(f"Regressed cases: {len(comparison.regressed_cases)}")
+        lines.append(f"Added cases: {len(comparison.added_cases)}")
+        lines.append(f"Removed cases: {len(comparison.removed_cases)}")
+        return chr(10).join(lines)
+
     def write_markdown(
         self, result: ExperimentResult | RunnerExperimentResult, filepath: str
     ) -> None:
