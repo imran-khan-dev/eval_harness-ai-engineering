@@ -4,6 +4,8 @@ from eval_harness.tracing.models import (
     CostEstimate,
     ExecutionTrace,
     LatencyMetrics,
+    ModelPricing,
+    ModelPricingRegistry,
     TokenUsage,
     TraceEvent,
 )
@@ -27,6 +29,8 @@ __all__ = [
     "TokenUsage",
     "LatencyMetrics",
     "CostEstimate",
+    "ModelPricing",
+    "ModelPricingRegistry",
     "InMemoryTraceRecorder",
     "ExecutionNotFoundError",
     "ExecutionAlreadyStartedError",

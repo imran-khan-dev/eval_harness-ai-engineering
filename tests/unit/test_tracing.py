@@ -10,6 +10,8 @@ from eval_harness.tracing.models import (
     CostEstimate,
     ExecutionTrace,
     LatencyMetrics,
+    ModelPricing,
+    ModelPricingRegistry,
     TokenUsage,
     TraceEvent,
     TraceEventType,
@@ -51,6 +53,219 @@ class TestTokenUsage:
     def test_invalid_negative(self) -> None:
         with pytest.raises(ValidationError):
             TokenUsage(prompt_tokens=-1)
+
+    def test_cached_tokens(self) -> None:
+        """Test cached tokens field."""
+        usage = TokenUsage(prompt_tokens=100, completion_tokens=50, cached_tokens=20)
+        assert usage.prompt_tokens == 100
+        assert usage.completion_tokens == 50
+        assert usage.cached_tokens == 20
+        assert usage.total_tokens == 170  # 100 + 50 + 20
+
+    def test_cached_tokens_default(self) -> None:
+        """Test cached_tokens defaults to 0."""
+        usage = TokenUsage(prompt_tokens=100, completion_tokens=50)
+        assert usage.cached_tokens == 0
+        assert usage.total_tokens == 150
+
+    def test_addition_with_cached_tokens(self) -> None:
+        """Test addition includes cached tokens."""
+        usage1 = TokenUsage(prompt_tokens=100, completion_tokens=50, cached_tokens=10)
+        usage2 = TokenUsage(prompt_tokens=200, completion_tokens=100, cached_tokens=20)
+        combined = usage1 + usage2
+        assert combined.prompt_tokens == 300
+        assert combined.completion_tokens == 150
+        assert combined.cached_tokens == 30
+        assert combined.total_tokens == 480  # 300 + 150 + 30
+
+    def test_invalid_negative_cached_tokens(self) -> None:
+        """Test that negative cached_tokens raises ValidationError."""
+        with pytest.raises(ValidationError):
+            TokenUsage(cached_tokens=-1)
+
+    def test_invalid_negative_completion_tokens(self) -> None:
+        """Test that negative completion_tokens raises ValidationError."""
+        with pytest.raises(ValidationError):
+            TokenUsage(completion_tokens=-1)
+
+    def test_total_tokens_always_derived(self) -> None:
+        """Test that total_tokens is always derived from components."""
+        # Even if explicitly provided, it gets recomputed
+        usage = TokenUsage(
+            prompt_tokens=100,
+            completion_tokens=50,
+            cached_tokens=20,
+            total_tokens=999,  # This should be ignored/recomputed
+        )
+        assert usage.total_tokens == 170  # Not 999
+
+
+class TestTokenUsageAggregation:
+    """Tests for token usage aggregation in ExecutionTrace."""
+
+    def test_aggregate_multiple_llm_calls(self) -> None:
+        """Test aggregating token usage across multiple LLM calls."""
+        trace = ExecutionTrace(case_id=uuid4())
+
+        # First LLM call
+        event1 = TraceEvent(
+            event_type=TraceEventType.LLM_CALL,
+            token_usage=TokenUsage(prompt_tokens=100, completion_tokens=50),
+        )
+        trace.add_event(event1)
+
+        # LLM response
+        event2 = TraceEvent(
+            event_type=TraceEventType.LLM_RESPONSE,
+            token_usage=TokenUsage(prompt_tokens=0, completion_tokens=50),
+        )
+        trace.add_event(event2)
+
+        # Another LLM call
+        event3 = TraceEvent(
+            event_type=TraceEventType.LLM_CALL,
+            token_usage=TokenUsage(prompt_tokens=200, completion_tokens=100),
+        )
+        trace.add_event(event3)
+
+        assert trace.total_tokens.prompt_tokens == 300
+        assert trace.total_tokens.completion_tokens == 200
+        assert trace.total_tokens.total_tokens == 500
+
+    def test_tool_events_do_not_aggregate_tokens(self) -> None:
+        """Test that tool events do not contribute to LLM token totals."""
+        trace = ExecutionTrace(case_id=uuid4())
+
+        # LLM call with tokens
+        trace.add_event(
+            TraceEvent(
+                event_type=TraceEventType.LLM_CALL,
+                token_usage=TokenUsage(prompt_tokens=100, completion_tokens=50),
+            )
+        )
+
+        # Tool call with tokens (should be ignored)
+        trace.add_event(
+            TraceEvent(
+                event_type=TraceEventType.TOOL_CALL,
+                token_usage=TokenUsage(prompt_tokens=50, completion_tokens=25),
+            )
+        )
+
+        # Tool response with tokens (should be ignored)
+        trace.add_event(
+            TraceEvent(
+                event_type=TraceEventType.TOOL_RESPONSE,
+                token_usage=TokenUsage(prompt_tokens=25, completion_tokens=10),
+            )
+        )
+
+        assert trace.total_tokens.prompt_tokens == 100
+        assert trace.total_tokens.completion_tokens == 50
+        assert trace.total_tokens.total_tokens == 150
+
+    def test_missing_token_usage_handled_correctly(self) -> None:
+        """Test that missing token_usage (None) doesn't affect totals."""
+        trace = ExecutionTrace(case_id=uuid4())
+
+        # Event without token_usage
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_CALL))
+
+        # Event with token_usage
+        trace.add_event(
+            TraceEvent(
+                event_type=TraceEventType.LLM_RESPONSE,
+                token_usage=TokenUsage(prompt_tokens=100, completion_tokens=50),
+            )
+        )
+
+        # Another event without token_usage
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_CALL))
+
+        assert trace.total_tokens.prompt_tokens == 100
+        assert trace.total_tokens.completion_tokens == 50
+        assert trace.total_tokens.total_tokens == 150
+
+    def test_aggregation_with_cached_tokens(self) -> None:
+        """Test aggregation includes cached tokens."""
+        trace = ExecutionTrace(case_id=uuid4())
+
+        trace.add_event(
+            TraceEvent(
+                event_type=TraceEventType.LLM_RESPONSE,
+                token_usage=TokenUsage(
+                    prompt_tokens=100, completion_tokens=50, cached_tokens=20
+                ),
+            )
+        )
+
+        trace.add_event(
+            TraceEvent(
+                event_type=TraceEventType.LLM_RESPONSE,
+                token_usage=TokenUsage(
+                    prompt_tokens=50, completion_tokens=25, cached_tokens=10
+                ),
+            )
+        )
+
+        assert trace.total_tokens.prompt_tokens == 150
+        assert trace.total_tokens.completion_tokens == 75
+        assert trace.total_tokens.cached_tokens == 30
+        assert trace.total_tokens.total_tokens == 255
+
+    def test_aggregation_order_independence(self) -> None:
+        """Test that aggregation is predictable regardless of event order."""
+        trace1 = ExecutionTrace(case_id=uuid4())
+        trace2 = ExecutionTrace(case_id=uuid4())
+
+        # Add events in different orders
+        events = [
+            TraceEvent(
+                event_type=TraceEventType.LLM_RESPONSE,
+                token_usage=TokenUsage(prompt_tokens=100, completion_tokens=50),
+            ),
+            TraceEvent(
+                event_type=TraceEventType.LLM_RESPONSE,
+                token_usage=TokenUsage(prompt_tokens=50, completion_tokens=25),
+            ),
+        ]
+
+        for e in events:
+            trace1.add_event(e)
+
+        for e in reversed(events):
+            trace2.add_event(e)
+
+        assert trace1.total_tokens.prompt_tokens == trace2.total_tokens.prompt_tokens
+        assert trace1.total_tokens.completion_tokens == trace2.total_tokens.completion_tokens
+        assert trace1.total_tokens.total_tokens == trace2.total_tokens.total_tokens
+
+    def test_reconstructed_trace_aggregation(self) -> None:
+        """Test that aggregation works when reconstructing trace from events."""
+        trace = ExecutionTrace(case_id=uuid4())
+
+        # Add events
+        trace.add_event(
+            TraceEvent(
+                event_type=TraceEventType.LLM_CALL,
+                token_usage=TokenUsage(prompt_tokens=100, completion_tokens=50),
+            )
+        )
+        trace.add_event(
+            TraceEvent(
+                event_type=TraceEventType.LLM_RESPONSE,
+                token_usage=TokenUsage(prompt_tokens=0, completion_tokens=50),
+            )
+        )
+
+        # Simulate reconstruction by creating new trace and adding same events
+        new_trace = ExecutionTrace(case_id=uuid4())
+        for event in trace.events:
+            new_trace.add_event(event)
+
+        assert new_trace.total_tokens.prompt_tokens == trace.total_tokens.prompt_tokens
+        assert new_trace.total_tokens.completion_tokens == trace.total_tokens.completion_tokens
+        assert new_trace.total_tokens.total_tokens == trace.total_tokens.total_tokens
 
 
 class TestLatencyMetrics:
@@ -140,6 +355,448 @@ class TestCostEstimate:
     def test_invalid_negative(self) -> None:
         with pytest.raises(ValidationError):
             CostEstimate(input_cost_usd=-0.01)
+
+
+class TestModelPricing:
+    """Tests for ModelPricing model."""
+
+    def test_basic_pricing(self) -> None:
+        """Test basic model pricing creation."""
+        pricing = ModelPricing(
+            model_name="gpt-4o",
+            input_price_per_million=5.0,
+            output_price_per_million=15.0,
+        )
+        assert pricing.model_name == "gpt-4o"
+        assert pricing.input_price_per_million == 5.0
+        assert pricing.output_price_per_million == 15.0
+        assert pricing.cached_input_price_per_million is None
+
+    def test_with_cached_pricing(self) -> None:
+        """Test pricing with cached input price."""
+        pricing = ModelPricing(
+            model_name="gpt-4o",
+            input_price_per_million=5.0,
+            output_price_per_million=15.0,
+            cached_input_price_per_million=1.25,
+        )
+        assert pricing.cached_input_price_per_million == 1.25
+
+    def test_with_version(self) -> None:
+        """Test pricing with version."""
+        pricing = ModelPricing(
+            model_name="gpt-4o",
+            input_price_per_million=5.0,
+            output_price_per_million=15.0,
+            version="2024-11",
+        )
+        assert pricing.version == "2024-11"
+
+    def test_invalid_negative_input_price(self) -> None:
+        """Test that negative input price raises ValidationError."""
+        with pytest.raises(ValidationError):
+            ModelPricing(
+                model_name="test",
+                input_price_per_million=-1.0,
+                output_price_per_million=5.0,
+            )
+
+    def test_invalid_negative_output_price(self) -> None:
+        """Test that negative output price raises ValidationError."""
+        with pytest.raises(ValidationError):
+            ModelPricing(
+                model_name="test",
+                input_price_per_million=5.0,
+                output_price_per_million=-1.0,
+            )
+
+    def test_invalid_negative_cached_price(self) -> None:
+        """Test that negative cached price raises ValidationError."""
+        with pytest.raises(ValidationError):
+            ModelPricing(
+                model_name="test",
+                input_price_per_million=5.0,
+                output_price_per_million=15.0,
+                cached_input_price_per_million=-1.0,
+            )
+
+    def test_estimate_cost_basic(self) -> None:
+        """Test basic cost estimation."""
+        pricing = ModelPricing(
+            model_name="gpt-4o",
+            input_price_per_million=5.0,
+            output_price_per_million=15.0,
+        )
+        usage = TokenUsage(prompt_tokens=1000, completion_tokens=500)
+        cost = pricing.estimate_cost(usage)
+
+        # 1000 input tokens = 0.001M * $5 = $0.005
+        # 500 output tokens = 0.0005M * $15 = $0.0075
+        assert cost.model_name == "gpt-4o"
+        assert cost.input_cost_usd == pytest.approx(0.005)
+        assert cost.output_cost_usd == pytest.approx(0.0075)
+        assert cost.total_cost_usd == pytest.approx(0.0125)
+
+    def test_estimate_cost_with_cached_tokens(self) -> None:
+        """Test cost estimation with cached tokens."""
+        pricing = ModelPricing(
+            model_name="gpt-4o",
+            input_price_per_million=5.0,
+            output_price_per_million=15.0,
+            cached_input_price_per_million=1.25,
+        )
+        usage = TokenUsage(prompt_tokens=1000, completion_tokens=500, cached_tokens=200)
+        cost = pricing.estimate_cost(usage)
+
+        # Regular input: 800 tokens = 0.0008M * $5 = $0.004
+        # Cached input: 200 tokens = 0.0002M * $1.25 = $0.00025
+        # Output: 500 tokens = 0.0005M * $15 = $0.0075
+        assert cost.input_cost_usd == pytest.approx(0.00425)
+        assert cost.output_cost_usd == pytest.approx(0.0075)
+        assert cost.total_cost_usd == pytest.approx(0.01175)
+
+    def test_estimate_cost_cached_tokens_fallback(self) -> None:
+        """Test cached tokens fall back to input price when not specified."""
+        pricing = ModelPricing(
+            model_name="gpt-4o",
+            input_price_per_million=5.0,
+            output_price_per_million=15.0,
+            cached_input_price_per_million=None,
+        )
+        usage = TokenUsage(prompt_tokens=1000, completion_tokens=500, cached_tokens=200)
+        cost = pricing.estimate_cost(usage)
+
+        # All input (including cached) at $5/M
+        # 1000 input = 0.001M * $5 = $0.005
+        assert cost.input_cost_usd == pytest.approx(0.005)
+        assert cost.output_cost_usd == pytest.approx(0.0075)
+        assert cost.total_cost_usd == pytest.approx(0.0125)
+
+    def test_estimate_cost_zero_usage(self) -> None:
+        """Test cost estimation with zero token usage."""
+        pricing = ModelPricing(
+            model_name="gpt-4o",
+            input_price_per_million=5.0,
+            output_price_per_million=15.0,
+        )
+        usage = TokenUsage(prompt_tokens=0, completion_tokens=0)
+        cost = pricing.estimate_cost(usage)
+
+        assert cost.input_cost_usd == 0.0
+        assert cost.output_cost_usd == 0.0
+        assert cost.total_cost_usd == 0.0
+
+    def test_estimate_cost_more_cached_than_prompt(self) -> None:
+        """Test cost estimation handles cached > prompt gracefully."""
+        pricing = ModelPricing(
+            model_name="gpt-4o",
+            input_price_per_million=5.0,
+            output_price_per_million=15.0,
+            cached_input_price_per_million=1.25,
+        )
+        # This shouldn't happen in practice, but handle gracefully
+        usage = TokenUsage(prompt_tokens=100, completion_tokens=50, cached_tokens=200)
+        cost = pricing.estimate_cost(usage)
+
+        # regular_input = max(0, 100 - 200) = 0
+        # cached = 200
+        assert cost.input_cost_usd == pytest.approx(0.00025)  # 200 * 1.25 / 1M
+
+
+class TestModelPricingRegistry:
+    """Tests for ModelPricingRegistry."""
+
+    def test_register_and_get(self) -> None:
+        """Test registering and retrieving pricing."""
+        registry = ModelPricingRegistry()
+        pricing = ModelPricing(
+            model_name="gpt-4o",
+            input_price_per_million=5.0,
+            output_price_per_million=15.0,
+        )
+        registry.register(pricing)
+
+        retrieved = registry.get("gpt-4o")
+        assert retrieved is not None
+        assert retrieved.model_name == "gpt-4o"
+        assert retrieved.input_price_per_million == 5.0
+
+    def test_get_unknown_model(self) -> None:
+        """Test getting unknown model returns None."""
+        registry = ModelPricingRegistry()
+        assert registry.get("unknown-model") is None
+
+    def test_unregister(self) -> None:
+        """Test unregistering a model."""
+        registry = ModelPricingRegistry()
+        pricing = ModelPricing(
+            model_name="gpt-4o",
+            input_price_per_million=5.0,
+            output_price_per_million=15.0,
+        )
+        registry.register(pricing)
+        assert registry.unregister("gpt-4o") is True
+        assert registry.get("gpt-4o") is None
+        assert registry.unregister("gpt-4o") is False  # Already unregistered
+
+    def test_fallback_pricing(self) -> None:
+        """Test fallback pricing for unknown models."""
+        registry = ModelPricingRegistry()
+        fallback = ModelPricing(
+            model_name="default",
+            input_price_per_million=10.0,
+            output_price_per_million=30.0,
+        )
+        registry.set_fallback(fallback)
+
+        # Register one model
+        gpt4o_pricing = ModelPricing(
+            model_name="gpt-4o", input_price_per_million=5.0, output_price_per_million=15.0
+        )
+        registry.register(gpt4o_pricing)
+
+        # Known model uses its own pricing
+        known = registry.get_or_fallback("gpt-4o")
+        assert known is not None
+        assert known.input_price_per_million == 5.0
+
+        # Unknown model uses fallback
+        unknown = registry.get_or_fallback("unknown-model")
+        assert unknown is not None
+        assert unknown.input_price_per_million == 10.0
+
+    def test_fallback_none_when_not_set(self) -> None:
+        """Test fallback returns None when not set."""
+        registry = ModelPricingRegistry()
+        assert registry.get_or_fallback("unknown-model") is None
+
+    def test_has_pricing(self) -> None:
+        """Test checking if model has pricing."""
+        registry = ModelPricingRegistry()
+        assert registry.has_pricing("gpt-4o") is False
+        gpt4o_pricing = ModelPricing(
+            model_name="gpt-4o", input_price_per_million=5.0, output_price_per_million=15.0
+        )
+        registry.register(gpt4o_pricing)
+        assert registry.has_pricing("gpt-4o") is True
+
+    def test_list_registered(self) -> None:
+        """Test listing registered models."""
+        registry = ModelPricingRegistry()
+        assert registry.list_registered() == []
+        gpt4o_pricing = ModelPricing(
+            model_name="gpt-4o", input_price_per_million=5.0, output_price_per_million=15.0
+        )
+        claude_pricing = ModelPricing(
+            model_name="claude-3-5-sonnet",
+            input_price_per_million=3.0,
+            output_price_per_million=15.0,
+        )
+        registry.register(gpt4o_pricing)
+        registry.register(claude_pricing)
+        registered = registry.list_registered()
+        assert "gpt-4o" in registered
+        assert "claude-3-5-sonnet" in registered
+        assert len(registered) == 2
+
+    def test_estimate_cost_registered_model(self) -> None:
+        """Test cost estimation for registered model."""
+        registry = ModelPricingRegistry()
+        gpt4o_pricing = ModelPricing(
+            model_name="gpt-4o", input_price_per_million=5.0, output_price_per_million=15.0
+        )
+        registry.register(gpt4o_pricing)
+
+        usage = TokenUsage(prompt_tokens=1000, completion_tokens=500)
+        cost = registry.estimate_cost("gpt-4o", usage)
+
+        assert cost is not None
+        assert cost.model_name == "gpt-4o"
+        assert cost.input_cost_usd == pytest.approx(0.005)
+        assert cost.output_cost_usd == pytest.approx(0.0075)
+
+    def test_estimate_cost_unknown_model_no_fallback(self) -> None:
+        """Test cost estimation returns None for unknown model without fallback."""
+        registry = ModelPricingRegistry()
+        usage = TokenUsage(prompt_tokens=1000, completion_tokens=500)
+        cost = registry.estimate_cost("unknown-model", usage)
+        assert cost is None
+
+    def test_estimate_cost_unknown_model_with_fallback(self) -> None:
+        """Test cost estimation uses fallback for unknown model."""
+        registry = ModelPricingRegistry()
+        fallback = ModelPricing(
+            model_name="default", input_price_per_million=10.0, output_price_per_million=30.0
+        )
+        registry.set_fallback(fallback)
+
+        usage = TokenUsage(prompt_tokens=1000, completion_tokens=500)
+        cost = registry.estimate_cost("unknown-model", usage)
+
+        assert cost is not None
+        assert cost.model_name == "default"
+        assert cost.input_cost_usd == pytest.approx(0.01)
+        assert cost.output_cost_usd == pytest.approx(0.015)
+
+
+class TestCostEstimationIntegration:
+    """Tests for cost estimation integration with ExecutionTrace."""
+
+    def test_trace_aggregates_cost_from_events(self) -> None:
+        """Test ExecutionTrace aggregates cost from LLM events."""
+        trace = ExecutionTrace(case_id=uuid4())
+
+        # Add LLM call with cost
+        event1 = TraceEvent(
+            event_type=TraceEventType.LLM_CALL,
+            cost=CostEstimate(input_cost_usd=0.01, output_cost_usd=0.02),
+        )
+        trace.add_event(event1)
+
+        # Add LLM response with cost
+        event2 = TraceEvent(
+            event_type=TraceEventType.LLM_RESPONSE,
+            cost=CostEstimate(input_cost_usd=0.005, output_cost_usd=0.01),
+        )
+        trace.add_event(event2)
+
+        assert trace.total_cost.input_cost_usd == 0.015
+        assert trace.total_cost.output_cost_usd == 0.03
+        assert trace.total_cost.total_cost_usd == 0.045
+
+    def test_trace_tool_events_do_not_affect_cost(self) -> None:
+        """Test that tool events do not affect cost totals."""
+        trace = ExecutionTrace(case_id=uuid4())
+
+        trace.add_event(
+            TraceEvent(
+                event_type=TraceEventType.LLM_CALL,
+                cost=CostEstimate(input_cost_usd=0.01, output_cost_usd=0.02),
+            )
+        )
+        trace.add_event(
+            TraceEvent(
+                event_type=TraceEventType.TOOL_CALL,
+                cost=CostEstimate(input_cost_usd=0.005, output_cost_usd=0.005),
+            )
+        )
+
+        assert trace.total_cost.input_cost_usd == 0.01
+        assert trace.total_cost.output_cost_usd == 0.02
+
+    def test_trace_estimates_cost_from_token_usage(self) -> None:
+        """Test trace can estimate cost from token usage via registry."""
+        registry = ModelPricingRegistry()
+        gpt4o_pricing = ModelPricing(
+            model_name="gpt-4o", input_price_per_million=5.0, output_price_per_million=15.0
+        )
+        registry.register(gpt4o_pricing)
+
+        trace = ExecutionTrace(case_id=uuid4())
+
+        # Simulate adding LLM events with token usage and estimated cost
+        event1 = TraceEvent(
+            event_type=TraceEventType.LLM_RESPONSE,
+            token_usage=TokenUsage(prompt_tokens=1000, completion_tokens=500),
+        )
+        # Estimate cost manually and add to event
+        cost = registry.estimate_cost("gpt-4o", event1.token_usage)
+        event1.cost = cost
+        trace.add_event(event1)
+
+        assert trace.total_cost.input_cost_usd == pytest.approx(0.005)
+        assert trace.total_cost.output_cost_usd == pytest.approx(0.0075)
+
+    def test_multiple_models_in_one_execution(self) -> None:
+        """Test cost aggregation with multiple models."""
+        registry = ModelPricingRegistry()
+        gpt4o_pricing = ModelPricing(
+            model_name="gpt-4o", input_price_per_million=5.0, output_price_per_million=15.0
+        )
+        claude_pricing = ModelPricing(
+            model_name="claude-3-5-sonnet",
+            input_price_per_million=3.0,
+            output_price_per_million=15.0,
+        )
+        registry.register(gpt4o_pricing)
+        registry.register(claude_pricing)
+
+        trace = ExecutionTrace(case_id=uuid4())
+
+        # gpt-4o call
+        event1 = TraceEvent(
+            event_type=TraceEventType.LLM_RESPONSE,
+            token_usage=TokenUsage(prompt_tokens=1000, completion_tokens=500),
+            data={"model": "gpt-4o"},
+        )
+        cost1 = registry.estimate_cost("gpt-4o", event1.token_usage)
+        event1.cost = cost1
+        trace.add_event(event1)
+
+        # claude call
+        event2 = TraceEvent(
+            event_type=TraceEventType.LLM_RESPONSE,
+            token_usage=TokenUsage(prompt_tokens=500, completion_tokens=200),
+            data={"model": "claude-3-5-sonnet"},
+        )
+        cost2 = registry.estimate_cost("claude-3-5-sonnet", event2.token_usage)
+        event2.cost = cost2
+        trace.add_event(event2)
+
+        # Total: gpt-4o $0.0125 + claude $0.0045 = $0.017
+        assert trace.total_cost.total_cost_usd == pytest.approx(0.017)
+
+    def test_estimated_vs_actual_cost_distinction(self) -> None:
+        """Test that estimated cost is distinguished from actual provider cost."""
+        trace = ExecutionTrace(case_id=uuid4())
+
+        # Estimated cost (from our pricing)
+        estimated = CostEstimate(
+            input_cost_usd=0.01,
+            output_cost_usd=0.02,
+            model_name="gpt-4o",
+            pricing_version="2024-11",
+        )
+        trace.add_event(
+            TraceEvent(
+                event_type=TraceEventType.LLM_RESPONSE,
+                cost=estimated,
+            )
+        )
+
+        # The trace should store the estimated cost
+        assert trace.total_cost.total_cost_usd == 0.03
+        assert trace.total_cost.model_name == "gpt-4o"
+        assert trace.total_cost.pricing_version == "2024-11"
+
+    def test_missing_token_usage_no_cost(self) -> None:
+        """Test that missing token usage doesn't cause errors."""
+        trace = ExecutionTrace(case_id=uuid4())
+
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_CALL))
+        trace.add_event(TraceEvent(event_type=TraceEventType.LLM_RESPONSE))
+
+        assert trace.total_cost.total_cost_usd == 0.0
+
+    def test_zero_token_usage_zero_cost(self) -> None:
+        """Test zero token usage results in zero cost."""
+        registry = ModelPricingRegistry()
+        gpt4o_pricing = ModelPricing(
+            model_name="gpt-4o", input_price_per_million=5.0, output_price_per_million=15.0
+        )
+        registry.register(gpt4o_pricing)
+
+        trace = ExecutionTrace(case_id=uuid4())
+
+        event = TraceEvent(
+            event_type=TraceEventType.LLM_RESPONSE,
+            token_usage=TokenUsage(prompt_tokens=0, completion_tokens=0),
+        )
+        cost = registry.estimate_cost("gpt-4o", event.token_usage)
+        event.cost = cost
+        trace.add_event(event)
+
+        assert trace.total_cost.total_cost_usd == 0.0
 
 
 class TestTraceEvent:

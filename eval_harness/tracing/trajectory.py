@@ -202,8 +202,8 @@ class TrajectoryReconstructor:
             return []
 
         path = [event]
-        current = event
-        while current.parent_id is not None:
+        current: TraceEvent | None = event
+        while current is not None and current.parent_id is not None:
             current = event_map.get(current.parent_id)
             if current is None:
                 break
