@@ -22,6 +22,9 @@ from eval_harness.evaluators import (
     ContainsEvaluator,
     Evaluator,
     ExactMatchEvaluator,
+    JSONFieldMatchEvaluator,
+    JSONSchemaEvaluator,
+    JSONValidityEvaluator,
     NormalizedExactMatchEvaluator,
     StringSimilarityEvaluator,
 )
@@ -70,4 +73,7 @@ __all__ = [
     "NormalizedExactMatchEvaluator",
     "ContainsEvaluator",
     "StringSimilarityEvaluator",
+    "JSONValidityEvaluator",
+    "JSONSchemaEvaluator",
+    "JSONFieldMatchEvaluator",
 ]
