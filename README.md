@@ -396,6 +396,188 @@ score = evaluator.evaluate(case, None, trace=trace)
 All trajectory evaluators follow the standard `Evaluator` protocol and return `MetricScore` objects with values in [0, 1], optional thresholds, and detailed breakdowns in `details`.
 
 
+## Complete Evaluator Catalog
+
+Eval Harness provides 13 deterministic evaluators across four categories:
+
+| Category | Evaluator | Metric Type | Metric Name | Purpose |
+|----------|-----------|-------------|-------------|---------|
+| **Answer** | ExactMatchEvaluator | `exact_match` | `exact_match` | Character-by-character string comparison |
+| | NormalizedExactMatchEvaluator | `exact_match` | `normalized_exact_match` | Case/whitespace-insensitive exact match |
+| | ContainsEvaluator | `exact_match` | `contains` | Substring containment check |
+| | StringSimilarityEvaluator | `semantic_similarity` | `string_similarity` | difflib.SequenceMatcher ratio |
+| **Structured Output** | JSONValidityEvaluator | `custom` | `json_validity` | Valid JSON detection |
+| | JSONSchemaEvaluator | `custom` | `json_schema_validation` | JSON Schema (Draft 2020-12) validation |
+| | JSONFieldMatchEvaluator | `custom` | `json_field_match` | Field-by-field JSON comparison |
+| **Tool Usage** | ToolSelectionEvaluator | `tool_selection_accuracy` | `tool_selection_accuracy` | Precision/recall/F1 on tool names |
+| | ToolArgumentEvaluator | `tool_call_correctness` | `tool_argument_correctness` | Argument value matching |
+| | ToolExecutionEvaluator | `tool_call_correctness` | `tool_execution_correctness` | Success/failure of tool executions |
+| **Trajectory** | TrajectoryMatchEvaluator | `trajectory_similarity` | `trajectory_match` | LCS-based sequence similarity |
+| | TrajectoryOrderEvaluator | `trajectory_similarity` | `trajectory_order` | Relative order correctness |
+| | TrajectoryCompletenessEvaluator | `trajectory_similarity` | `trajectory_completeness` | Fraction of expected steps completed |
+
+
+## Metric Aggregation (M5.5)
+
+Eval Harness provides a flexible metric aggregation system for combining scores from multiple evaluators, computing statistics, and supporting weighted averages.
+
+### Basic Aggregation
+
+The `MetricAggregator` class and `aggregate_scores()` function provide unweighted aggregation with comprehensive statistics:
+
+```python
+from eval_harness import (
+    MetricAggregator,
+    MetricScore,
+    MetricType,
+    aggregate_scores,
+    ExactMatchEvaluator,
+    StringSimilarityEvaluator,
+    EvaluationCase,
+)
+
+# Run multiple evaluators on a case
+case = EvaluationCase(input="What is 2+2?", expected_output="4")
+evaluators = [
+    ExactMatchEvaluator(),
+    StringSimilarityEvaluator(),
+]
+
+# Collect scores
+scores = [ev.evaluate(case, "4") for ev in evaluators]
+
+# Aggregate
+aggregator = MetricAggregator()
+aggregator.add_scores(scores)
+result = aggregator.aggregate()
+
+print(f"Overall mean: {result['overall'].mean:.2f}")
+print(f"Overall pass rate: {result['overall'].pass_rate:.1%}")
+
+# Per metric type
+for mtype, stats in result['by_type'].items():
+    print(f"  {mtype.value}: mean={stats.mean:.2f}, pass_rate={stats.pass_rate:.1%}")
+
+# Per metric name
+for name, stats in result['by_name'].items():
+    print(f"  {name}: mean={stats.mean:.2f}")
+```
+
+**Output includes:**
+- `overall`: AggregationResult across all scores
+- `by_type`: Dict[MetricType, AggregationResult] - grouped by metric type
+- `by_name`: Dict[str, AggregationResult] - grouped by metric name
+
+Each `AggregationResult` contains:
+- `count`, `mean`, `min`, `max`, `std_dev`
+- `pass_count`, `fail_count`, `no_threshold_count`
+- `pass_rate` (pass_count / (pass_count + fail_count))
+
+### Weighted Aggregation
+
+Assign weights to metric names for weighted averages:
+
+```python
+from eval_harness import aggregate_scores, MetricScore, MetricType
+
+scores = [
+    MetricScore(metric_type=MetricType.ACCURACY, name="accuracy", value=1.0, threshold=0.8),
+    MetricScore(metric_type=MetricType.ACCURACY, name="accuracy", value=0.5, threshold=0.8),
+    MetricScore(metric_type=MetricType.F1, name="f1", value=0.8, threshold=0.8),
+]
+
+# Weight accuracy 2x, f1 1x
+weights = {"accuracy": 2.0, "f1": 1.0}
+result = aggregate_scores(scores, weights=weights, default_weight=1.0)
+
+# Weighted mean: (1.0*2 + 0.5*2 + 0.8*1) / (2+2+1) = 0.76
+print(f"Weighted mean: {result['overall'].mean:.2f}")  # 0.76
+
+# Weighted pass rate: weights of passed / weights of thresholded
+print(f"Weighted pass rate: {result['overall'].pass_rate:.2f}")  # 0.60
+```
+
+**Weight behavior:**
+- Weights are per-metric-name, applied to each score with that name
+- `default_weight` used for metrics not in weights dict
+- Weights must be non-negative; total weight must be > 0
+- Min/max/std_dev remain unweighted (order statistics)
+
+### Integration with EvaluationResult and ExperimentResult
+
+Both result models now support aggregation directly:
+
+```python
+from eval_harness import (
+    EvaluationResult,
+    ExperimentResult,
+    EvaluationStatus,
+    ExactMatchEvaluator,
+    StringSimilarityEvaluator,
+    EvaluationCase,
+)
+from uuid import uuid4
+
+# Case-level aggregation
+case_id = uuid4()
+result = EvaluationResult(case_id=case_id, status=EvaluationStatus.PASSED)
+
+# Run multiple evaluators
+for ev in [ExactMatchEvaluator(), StringSimilarityEvaluator()]:
+    result.add_metric_score(ev.evaluate(case, "4"))
+
+# Aggregate this case's metrics
+agg = result.aggregate_metrics()
+print(f"Case overall: {agg['overall'].mean:.2f}")
+
+# Weighted case aggregation
+weighted_agg = result.aggregate_metrics(weights={"exact_match": 2.0})
+print(f"Weighted: {weighted_agg['overall'].mean:.2f}")
+
+# Quick overall score
+overall = result.get_overall_score()
+print(f"Overall score: {overall:.2f}")
+
+# Experiment-level aggregation
+exp = ExperimentResult(config_name="test", dataset_name="qa")
+exp.add_case_result(result)
+exp.finalize()
+
+# Aggregate across all cases
+all_agg = exp.aggregate_all_metrics()
+print(f"Experiment overall: {all_agg['overall'].mean:.2f}")
+
+# Per-case breakdown
+case_aggs = exp.get_case_level_aggregates()
+for i, agg in enumerate(case_aggs):
+    print(f"  Case {i}: {agg['overall'].mean:.2f}")
+
+# Weighted experiment aggregation
+weighted_exp = exp.aggregate_all_metrics(weights={"exact_match": 3.0, "string_similarity": 1.0})
+```
+
+### Aggregation Details
+
+**Empty input behavior:**
+- `count=0`, `mean=0.0`, `min=0.0`, `max=0.0`, `std_dev=0.0`
+- All pass/fail counts = 0, `pass_rate=0.0`
+
+**Missing thresholds:**
+- Scores without thresholds contribute to `no_threshold_count`
+- They don't affect `pass_rate` (only thresholded scores count)
+
+**Deterministic behavior:**
+- Standard deviation uses population formula (divide by N)
+- Percentiles not computed (use `AggregatedMetrics` for std dev across cases)
+- Grouping by name/type is stable
+
+**Known Limitations:**
+1. Aggregation operates on already-computed `MetricScore` objects; it doesn't re-evaluate
+2. Weighted aggregation only affects mean and pass_rate; min/max/std_dev are unweighted
+3. No support for metric-type-level weights (only metric-name-level)
+4. `AggregatedMetrics` in `ExperimentResult` remains for backward compatibility; new code should use `aggregate_all_metrics()`
+
+
 ## Dataset Management (M2)
 
 Eval Harness provides robust dataset loading and validation capabilities for JSON and JSONL formats.

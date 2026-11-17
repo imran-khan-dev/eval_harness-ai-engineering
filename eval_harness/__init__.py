@@ -34,6 +34,11 @@ from eval_harness.evaluators import (
     TrajectoryMatchEvaluator,
     TrajectoryOrderEvaluator,
 )
+from eval_harness.metrics.aggregation import (
+    AggregationResult,
+    MetricAggregator,
+    aggregate_scores,
+)
 from eval_harness.metrics.models import (
     AggregatedMetrics,
     EvaluationResult,
@@ -73,6 +78,9 @@ __all__ = [
     "ExperimentResult",
     "MetricScore",
     "AggregatedMetrics",
+    "MetricAggregator",
+    "AggregationResult",
+    "aggregate_scores",
     "Evaluator",
     "BaseEvaluator",
     "ExactMatchEvaluator",
