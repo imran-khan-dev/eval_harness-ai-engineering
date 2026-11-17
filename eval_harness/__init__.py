@@ -45,6 +45,10 @@ from eval_harness.metrics.models import (
     ExperimentResult,
     MetricScore,
 )
+from eval_harness.reporting import (
+    JSONReportGenerator,
+    MarkdownReportGenerator,
+)
 from eval_harness.runner import (
     BaseSystem,
     ExperimentRunner,
@@ -110,4 +114,6 @@ __all__ = [
     "SystemExecutionStatus",
     "ExperimentRunner",
     "RunnerExperimentResult",
+    "JSONReportGenerator",
+    "MarkdownReportGenerator",
 ]
