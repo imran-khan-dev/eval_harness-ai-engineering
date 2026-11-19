@@ -318,6 +318,7 @@ class ExperimentResult(BaseModel):
     def add_case_result(self, result: EvaluationResult) -> None:
         """Add a case result and update aggregates."""
         self.case_results.append(result)
+        
         if result.latency_ms:
             self.total_latency_ms += result.latency_ms
 

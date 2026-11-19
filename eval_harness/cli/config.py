@@ -91,28 +91,37 @@ def run_experiment(cfg: "CLIConfig", baseline_result: Any = None) -> tuple["CLIC
     evaluators = _make_evaluators(cfg.evaluators)
     runner = ExperimentRunner(system, evaluators=evaluators)
     result = runner.run_and_evaluate(dataset, config_name=cfg.experiment_name or "cli")
-    from eval_harness.baselines.comparator import BaselineComparator
+
+    # Compare with the previous experiment (baseline)
     from eval_harness.regression.models import QualityGateConfig
     from eval_harness.regression.tester import RegressionTester
-    comparison = None
     loaded_baseline = baseline_result
+
     if loaded_baseline is None and cfg.baseline_path:
         from eval_harness.baselines.artifacts import load_baseline
         loaded_baseline = load_baseline(cfg.baseline_path)
-    if loaded_baseline is not None:
-        comparison = BaselineComparator().compare(loaded_baseline, result)
+
+    # Check the quality requirements
     gate_config = QualityGateConfig.model_validate(cfg.quality_gate) if cfg.quality_gate else QualityGateConfig()
+    
+    # Check whether the new result passes the quality gate
     gate_result = RegressionTester(gate_config).evaluate(result, loaded_baseline)
+  
+    # Prepare the report folder
     from pathlib import Path
     from eval_harness.reporting.json_report import JSONReportGenerator
     from eval_harness.reporting.markdown_report import MarkdownReportGenerator
+  
     outdir = Path(cfg.report_output_dir)
     outdir.mkdir(parents=True, exist_ok=True)
     json_path = outdir / cfg.json_report_filename
     md_path = outdir / cfg.markdown_report_filename
+    
     JSONReportGenerator().write_json(result, str(json_path))
     MarkdownReportGenerator().write_markdown(result, str(md_path))
+
     if cfg.save_baseline and cfg.save_baseline_path and gate_result.passed:
         from eval_harness.baselines.artifacts import save_baseline
         save_baseline(result, cfg.save_baseline_path, overwrite=cfg.overwrite_baseline)
+    
     return cfg, dataset, result, gate_result, str(json_path), str(md_path)

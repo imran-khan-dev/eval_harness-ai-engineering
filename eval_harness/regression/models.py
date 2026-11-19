@@ -6,10 +6,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-from eval_harness.baselines.comparator import BaselineComparator
-from eval_harness.baselines.models import BaselineComparisonResult
-
-
 class GateStatus(str, Enum):
     PASS = "pass"
     FAIL = "fail"

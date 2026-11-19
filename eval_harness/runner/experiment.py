@@ -16,6 +16,7 @@ from eval_harness.metrics.models import (
     ExperimentResult,
     MetricScore,
 )
+
 from eval_harness.runner.models import (
     RunnerExperimentResult,
     SystemExecutionResult,
@@ -113,61 +114,6 @@ class ExperimentRunner:
         # Convert to metrics ExperimentResult and run evaluators
         return self._evaluate_results(runner_result, dataset.cases, config_name)
 
-    async def run_async(
-        self,
-        dataset: EvaluationDataset,
-        **execution_kwargs: Any,
-    ) -> RunnerExperimentResult:
-        """Execute the system against all cases asynchronously.
-
-        This method should be used when the system implements an async execute method.
-        If the system only has a synchronous execute method, it will be run in a thread pool.
-
-        Args:
-            dataset: The evaluation dataset containing cases to execute.
-            **execution_kwargs: Additional arguments passed to system.execute().
-
-        Returns:
-            RunnerExperimentResult with all execution results and aggregates.
-        """
-        experiment = RunnerExperimentResult(
-            dataset_id=dataset.id,
-            dataset_name=dataset.name,
-            run_id=self.run_id,
-            metadata=self.metadata,
-            completed_at=None,
-            error=None,
-        )
-
-        for case in dataset.cases:
-            exec_result = await self._execute_case_async(case, **execution_kwargs)
-            experiment.add_execution_result(exec_result)
-
-        experiment.finalize()
-        return experiment
-
-    async def run_and_evaluate_async(
-        self,
-        dataset: EvaluationDataset,
-        config_name: str = "runner_experiment",
-        **execution_kwargs: Any,
-    ) -> ExperimentResult:
-        """Execute the system asynchronously and run evaluators on the results.
-
-        Args:
-            dataset: The evaluation dataset containing cases to execute.
-            config_name: Name to use for the evaluation config.
-            **execution_kwargs: Additional arguments passed to system.execute().
-
-        Returns:
-            ExperimentResult with execution results, metric scores, and aggregates.
-        """
-        # First, execute all cases
-        runner_result = await self.run_async(dataset, **execution_kwargs)
-
-        # Convert to metrics ExperimentResult and run evaluators
-        return self._evaluate_results(runner_result, dataset.cases, config_name)
-
     def _execute_case(
         self,
         case: EvaluationCase,
@@ -235,6 +181,61 @@ class ExperimentRunner:
         # Finalize the execution result
         result.finalize()
         return result
+
+    async def run_async(
+        self,
+        dataset: EvaluationDataset,
+        **execution_kwargs: Any,
+    ) -> RunnerExperimentResult:
+        """Execute the system against all cases asynchronously.
+
+        This method should be used when the system implements an async execute method.
+        If the system only has a synchronous execute method, it will be run in a thread pool.
+
+        Args:
+            dataset: The evaluation dataset containing cases to execute.
+            **execution_kwargs: Additional arguments passed to system.execute().
+
+        Returns:
+            RunnerExperimentResult with all execution results and aggregates.
+        """
+        experiment = RunnerExperimentResult(
+            dataset_id=dataset.id,
+            dataset_name=dataset.name,
+            run_id=self.run_id,
+            metadata=self.metadata,
+            completed_at=None,
+            error=None,
+        )
+
+        for case in dataset.cases:
+            exec_result = await self._execute_case_async(case, **execution_kwargs)
+            experiment.add_execution_result(exec_result)
+
+        experiment.finalize()
+        return experiment
+
+    async def run_and_evaluate_async(
+        self,
+        dataset: EvaluationDataset,
+        config_name: str = "runner_experiment",
+        **execution_kwargs: Any,
+    ) -> ExperimentResult:
+        """Execute the system asynchronously and run evaluators on the results.
+
+        Args:
+            dataset: The evaluation dataset containing cases to execute.
+            config_name: Name to use for the evaluation config.
+            **execution_kwargs: Additional arguments passed to system.execute().
+
+        Returns:
+            ExperimentResult with execution results, metric scores, and aggregates.
+        """
+        # First, execute all cases
+        runner_result = await self.run_async(dataset, **execution_kwargs)
+
+        # Convert to metrics ExperimentResult and run evaluators
+        return self._evaluate_results(runner_result, dataset.cases, config_name)
 
     async def _execute_case_async(
         self,

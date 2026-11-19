@@ -10,14 +10,14 @@ EXIT_GATE_FAIL = 1
 EXIT_CONFIG_ERROR = 2
 EXIT_EXECUTION_ERROR = 3
 
-
+# This function defines which commands users are allowed to type.
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="eval-harness")
     sub = parser.add_subparsers(dest="command", required=True)
     run = sub.add_parser("run")
     run.add_argument("--config", required=True)
     return parser
-
+# eval-harness run --config config.json
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
