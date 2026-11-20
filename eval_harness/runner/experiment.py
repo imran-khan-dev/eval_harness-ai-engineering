@@ -57,6 +57,7 @@ class ExperimentRunner:
         self.run_id = run_id or uuid4()
         self.metadata = metadata or {}
 
+    # Step 2
     def run(
         self,
         dataset: EvaluationDataset,
@@ -87,6 +88,7 @@ class ExperimentRunner:
         experiment.finalize()
         return experiment
 
+    # Step 1
     def run_and_evaluate(
         self,
         dataset: EvaluationDataset,
@@ -114,6 +116,7 @@ class ExperimentRunner:
         # Convert to metrics ExperimentResult and run evaluators
         return self._evaluate_results(runner_result, dataset.cases, config_name)
 
+    # Step 3
     def _execute_case(
         self,
         case: EvaluationCase,
@@ -323,6 +326,7 @@ class ExperimentRunner:
         result.finalize()
         return result
 
+    # Step 4
     def _evaluate_results(
         self,
         runner_result: RunnerExperimentResult,

@@ -1,4 +1,4 @@
-"""Agent trajectory reconstruction from trace events."""
+"""The sequence of actions an AI agent takes to complete a task. Stores the AI's action history"""
 
 from __future__ import annotations
 

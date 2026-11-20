@@ -25,7 +25,7 @@ class TraceEventType(str, Enum):
     ERROR = "error"
     CUSTOM = "custom"
 
-
+# Stores how many tokens the AI consumed.
 class TokenUsage(BaseModel):
     """Token usage for an LLM call.
 
@@ -142,7 +142,7 @@ class LatencyStats(BaseModel):
         "extra": "forbid",
     }
 
-
+# Stores the estimated cost.
 class CostEstimate(BaseModel):
     """Estimated cost for an LLM operation.
 
@@ -377,7 +377,7 @@ class ModelPricingRegistry:
             return None
         return pricing.estimate_cost(token_usage)
 
-
+# Stores one event that happened during execution.
 class TraceEvent(BaseModel):
     """A single event in an execution trace.
 
@@ -616,7 +616,7 @@ class TraceEvent(BaseModel):
         """Check if this is a tool-related event (call or response)."""
         return self.event_type in (TraceEventType.TOOL_CALL, TraceEventType.TOOL_RESPONSE)
 
-
+# Stores the history of one AI execution.
 class ExecutionTrace(BaseModel):
     """A complete execution trace for an evaluation case.
 
