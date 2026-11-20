@@ -6,7 +6,6 @@ from typing import Any
 
 from eval_harness.baselines.models import (
     BaselineComparisonResult,
-    CaseComparison,
     ChangeDirection,
     ChangeOutcome,
     ExperimentSummary,

@@ -19,7 +19,7 @@ class RegressionTester:
     def __init__(self, config: QualityGateConfig) -> None:
         self.config = config
 
-    def evaluate(
+    def evaluate( 
         self,
         current: ExperimentResult,
         baseline: ExperimentResult | None = None,
