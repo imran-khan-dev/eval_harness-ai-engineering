@@ -1,4 +1,7 @@
-"""Structured output evaluators for JSON validity, schema validation, and field matching."""
+"""Structured output evaluators for JSON validity, schema validation, and field matching.
+
+These evaluators check whether an AI system returns the correct JSON structure and data, 
+rather than just checking whether its answer is textually similar to the expected answer"""
 
 from __future__ import annotations
 
