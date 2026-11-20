@@ -1,4 +1,6 @@
 """Agent trajectory evaluators for comparing expected vs actual execution paths."""
+"""Trajectory means the sequence of steps an AI agent takes to complete a task."""
+
 
 from __future__ import annotations
 
@@ -10,7 +12,7 @@ from eval_harness.evaluators.base import BaseEvaluator
 from eval_harness.metrics.models import MetricScore, MetricType
 from eval_harness.tracing.models import ExecutionTrace, TraceEventType
 
-
+# Did the agent follow the expected sequence of steps?
 class TrajectoryMatchEvaluator(BaseEvaluator):
     """Trajectory match evaluator.
 
@@ -249,7 +251,7 @@ class TrajectoryMatchEvaluator(BaseEvaluator):
             metadata={"case_id": str(case.id)},
         )
 
-
+# Did the agent perform the expected steps in the correct order?
 class TrajectoryOrderEvaluator(BaseEvaluator):
     """Trajectory order evaluator.
 
@@ -461,7 +463,7 @@ class TrajectoryOrderEvaluator(BaseEvaluator):
             metadata={"case_id": str(case.id)},
         )
 
-
+# Did the agent complete all expected steps and finish successfully?
 class TrajectoryCompletenessEvaluator(BaseEvaluator):
     """Trajectory completeness evaluator.
 
@@ -617,3 +619,11 @@ class TrajectoryCompletenessEvaluator(BaseEvaluator):
             },
             metadata={"case_id": str(case.id)},
         )
+
+
+# Expected tool calls are: ["get_weather", "check_rain", "answer"]
+# The agent actually calls: ["get_weather", "answer"]
+
+# Match: Not an exact match; one step is missing.
+# Order: The two expected tools that appeared are in the correct order, but check_rain is missing.
+# Completeness: Not complete because an expected tool wasn't called.

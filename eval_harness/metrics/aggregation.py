@@ -35,7 +35,6 @@ class AggregationResult:
     no_threshold_count: int
     pass_rate: float
 
-
 class MetricAggregator:
     """Aggregates multiple MetricScore objects into summary statistics.
 
@@ -189,22 +188,25 @@ class MetricAggregator:
         Raises:
             ValueError: If any weight is negative or sum of weights is zero.
         """
+
+        # Handle empty scores
         if not self._scores:
             return {
                 "overall": self._compute_stats([], 0, 0, 0),
                 "by_type": {},
                 "by_name": {},
             }
-
+     
+        # Set default weights
         if weights is None:
             weights = {}
 
-        # Validate weights
+        # Validate weights = A weight cannot be negative.
         for name, weight in weights.items():
             if weight < 0:
                 raise ValueError(f"Weight for '{name}' must be non-negative")
 
-        # Group by metric name for weighting
+        # Group scores by metric name
         by_name: dict[str, list[MetricScore]] = defaultdict(list)
         for score in self._scores:
             by_name[score.name].append(score)
@@ -218,7 +220,7 @@ class MetricAggregator:
         if total_weight == 0:
             raise ValueError("Total weight is zero; cannot compute weighted average")
 
-        # Weighted overall mean
+        # Weighted overall mean = This is the actual weighted average calculation.
         weighted_sum = 0.0
         for name, scores in by_name.items():
             weight = weights.get(name, default_weight)
@@ -227,9 +229,10 @@ class MetricAggregator:
 
         weighted_mean = weighted_sum / total_weight
 
-        # For min/max/std_dev in weighted context, we still use unweighted
-        # (these are order statistics, not averages)
+       
+        # Calculate other statistics
         all_values = [s.value for s in self._scores]
+        # Collects all the original scores.
         overall_pass = sum(1 for s in self._scores if s.passed is True)
         overall_fail = sum(1 for s in self._scores if s.passed is False)
         overall_no_threshold = sum(1 for s in self._scores if s.passed is None)
@@ -253,6 +256,7 @@ class MetricAggregator:
             else 0.0
         )
 
+        # Create the overall result
         overall = AggregationResult(
             count=len(self._scores),
             mean=weighted_mean,
@@ -265,7 +269,7 @@ class MetricAggregator:
             pass_rate=weighted_pass_rate,
         )
 
-        # By type (unweighted within each type)
+        # Group results by metric type
         type_results = {}
         for mtype, scores in defaultdict(list, {
             mtype: [s for s in self._scores if s.metric_type == mtype]
@@ -279,7 +283,7 @@ class MetricAggregator:
                 values, pass_count, fail_count, no_threshold_count
             )
 
-        # By name (weighted)
+        # Group results by metric name
         name_results = {}
         for name, scores in by_name.items():
             weight = weights.get(name, default_weight)
@@ -312,7 +316,6 @@ class MetricAggregator:
             "by_type": type_results,
             "by_name": name_results,
         }
-
 
 def aggregate_scores(
     scores: list[MetricScore],
