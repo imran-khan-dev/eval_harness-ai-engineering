@@ -14,7 +14,8 @@ from eval_harness.regression.models import (
     RuleType,
 )
 
-
+# It compares the latest evaluation results with previous results (baseline) 
+# and tells you whether performance has improved, stayed the same, or regressed.
 class RegressionTester:
     def __init__(self, config: QualityGateConfig) -> None:
         self.config = config
